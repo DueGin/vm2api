@@ -7,10 +7,12 @@ import { normalizeTimezone } from '../../src/lib/core/timezone.mjs'
 import {
   applyGeneratedFingerprint,
   DEVICE_ID_RE,
+  ensureGuestMachineIdFile,
   generateWorkstationFingerprint,
   HOSTNAME_RE,
   isGeneratedHostname,
   isHexDeviceId,
+  isPlaceholderHostname,
   MACHINE_ID_RE,
   takenFingerprintKeys,
   writeGuestMachineIdFile,
@@ -106,4 +108,50 @@ test('writeGuestMachineIdFile replaces a docker directory trap', () => {
   assert.equal(fs.statSync(dest).isFile(), true)
   assert.equal(fs.readFileSync(dest, 'utf8').trim(), 'ab'.repeat(16))
   fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('ensureGuestMachineIdFile keeps a matching file and rewrites a stale one', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-mid-sync-'))
+  try {
+    const vm = { id: 'vm-06', fingerprint: { guest_machine_id: 'cd'.repeat(16) } }
+    const dest = writeGuestMachineIdFile(root, vm.id, 'cd'.repeat(16))
+    const ino = fs.statSync(dest).ino
+    assert.equal(ensureGuestMachineIdFile(root, vm), dest)
+    assert.equal(fs.statSync(dest).ino, ino)
+    // The slot record moved on (reset / rebuild); the mount source must follow it.
+    vm.fingerprint.guest_machine_id = 'EF'.repeat(16)
+    assert.equal(ensureGuestMachineIdFile(root, vm), dest)
+    assert.equal(fs.readFileSync(dest, 'utf8'), `${'ef'.repeat(16)}\n`)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('isPlaceholderHostname catches DMI defaults raw, slugged and with a machine-id suffix', () => {
+  for (const value of [
+    'System Product Name',
+    'system-product-name',
+    'system-product-name-53a439',
+    'System Version',
+    'Default string',
+    'default-string-0a1b2c',
+    'To Be Filled By O.E.M.',
+    'to-be-filled-by-o-e-m-abcdef',
+    'Not Specified',
+    'Unknown',
+    'unknown-123abc',
+    'System manufacturer',
+    '',
+  ]) {
+    assert.equal(isPlaceholderHostname(value), true, value)
+  }
+  for (const value of [
+    '10t8sj9900-d57eac',
+    'rog-strix-b550-f-gaming-53a439',
+    'thinkcentre-m720q',
+    'ubuntu-1a2b',
+    'unknownhost',
+  ]) {
+    assert.equal(isPlaceholderHostname(value), false, value)
+  }
 })

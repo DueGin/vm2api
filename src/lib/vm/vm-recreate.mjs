@@ -173,7 +173,11 @@ function recreatedMachine(prev, keep) {
   return {}
 }
 
-export function buildRecreatedVmRecord(prev, generated, { mode = 'traits' } = {}) {
+export function buildRecreatedVmRecord(
+  prev,
+  generated,
+  { mode = 'traits', machinePatch = recreatedMachine(prev, mode === 'keep') } = {},
+) {
   const keep = mode === 'keep'
   const pack = keep
     ? {
@@ -233,7 +237,7 @@ export function buildRecreatedVmRecord(prev, generated, { mode = 'traits' } = {}
     seed_policy: defaultSeedPolicy(prev.seed_policy || {}),
     runtime: { type: prev.runtime?.type === 'kvm' ? 'kvm' : 'docker' },
     // Sizing survives a reset; traits draws a new MAC / SMBIOS / disk serial. KVM cannot boot without them.
-    ...recreatedMachine(prev, keep),
+    ...machinePatch,
     proxy_required: prev.proxy_required,
     ...(prev.inference_engine ? { inference_engine: prev.inference_engine } : {}),
     ...(prev.dataplane ? { dataplane: prev.dataplane } : {}),
@@ -257,12 +261,15 @@ export function recreateVmFiles(projectRoot, prev, { mode = 'traits' } = {}) {
   if (!projectRoot || !prev?.id) throw new Error('projectRoot and vm id required')
   const keep = mode === 'keep'
   wipeSlotHome(projectRoot, prev.id, { keepData: keep })
+  const machinePatch = recreatedMachine(prev, keep)
   const generated = keep
     ? null
-    : assignComputerFingerprint(projectRoot, prev, {
-        taken: takenFingerprintKeys(listVms(projectRoot), { exceptId: prev.id }),
-      })
-  const vm = buildRecreatedVmRecord(prev, generated, { mode: keep ? 'keep' : 'traits' })
+    : assignComputerFingerprint(
+        projectRoot,
+        { ...prev, ...machinePatch },
+        { taken: takenFingerprintKeys(listVms(projectRoot), { exceptId: prev.id }) },
+      )
+  const vm = buildRecreatedVmRecord(prev, generated, { mode: keep ? 'keep' : 'traits', machinePatch })
   const vmPath = path.join(projectRoot, 'vms', `${prev.id}.json`)
   atomicWriteJson(vmPath, vm, { mode: 0o600 })
   if (vm.fingerprint?.guest_machine_id) writeGuestMachineIdFile(projectRoot, vm.id, vm.fingerprint.guest_machine_id)

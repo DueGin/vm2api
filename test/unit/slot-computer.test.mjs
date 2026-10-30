@@ -81,6 +81,7 @@ test('linux computer is written once and device_id stays 64-bit', () => {
   const pack = assignComputerFingerprint(root, vm, {
     taken: { hostname: new Set(), device_id: new Set(), guest_machine_id: new Set() },
   })
+  // An existing computer is kept; only a computer the call creates is minted.
   assert.equal(pack.hostname, first.hostname)
   assert.equal(pack.guest_machine_id, first.guest_machine_id)
   assert.match(pack.device_id, DEVICE_ID_RE)
