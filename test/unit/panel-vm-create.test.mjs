@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createPanelHandler } from '../../src/lib/admin/panel-routes.mjs'
 import { ProxyPool } from '../../src/lib/vm/proxy-pool.mjs'
+import { ensureSlotComputer } from '../../src/lib/identity/slot-computer.mjs'
 
 function makeCreateHandler(project, body, proxyPool, accountQuota, extra = {}) {
   const response = {}
@@ -440,4 +441,57 @@ test('GET /vms/create-options is available to a tenant user', async () => {
   assert.equal(response.body.data.vm.memory, '4g')
   assert.equal(response.body.data.vm.default_runtime, 'kvm')
   assert.deepEqual(response.body.data.kvm, { ok: true, accel: 'tcg', error: null })
+})
+
+test('reset-fingerprint rotates device_id but keeps the computer and its machine-id file', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-reset-fp-'))
+  try {
+    const created = makeCreateHandler(root, { runtime_type: 'docker', start: false, auto_allocate_proxy: false })
+    await created.handlePanel({ method: 'POST' }, {}, new URL('http://localhost/api/panel/vms/create'))
+    assert.equal(created.response.status, 200, JSON.stringify(created.response.body))
+    const id = created.response.body.data.vm.id
+    const vmPath = path.join(root, 'vms', `${id}.json`)
+    const midPath = path.join(root, 'vms', id, 'machine-id')
+    const before = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+    const first = ensureSlotComputer(root, before)
+    assert.equal(first.hostname, before.fingerprint.hostname)
+    assert.equal(first.guest_machine_id, before.fingerprint.guest_machine_id)
+    assert.equal(fs.readFileSync(midPath, 'utf8').trim(), first.guest_machine_id)
+
+    const reset = makeCreateHandler(root, {})
+    await reset.handlePanel({ method: 'POST' }, {}, new URL(`http://localhost/api/panel/vms/${id}/reset-fingerprint`))
+    assert.equal(reset.response.status, 200, JSON.stringify(reset.response.body))
+    const after = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+    assert.notEqual(after.fingerprint.device_id, before.fingerprint.device_id)
+    assert.equal(after.fingerprint.hostname, before.fingerprint.hostname)
+    assert.equal(after.fingerprint.guest_machine_id, before.fingerprint.guest_machine_id)
+    const second = ensureSlotComputer(root, after)
+    assert.equal(second.created, false)
+    assert.equal(second.hostname, first.hostname)
+    assert.equal(second.guest_machine_id, first.guest_machine_id)
+    assert.equal(second.mac, first.mac)
+    assert.equal(fs.readFileSync(midPath, 'utf8').trim(), first.guest_machine_id)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('create over a deleted slot leftover computer directory mints a new computer', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-create-leftover-'))
+  try {
+    const leftover = { id: 'vm-01', kernel: 'ubuntu-24.04', runtime: { type: 'docker' } }
+    const old = ensureSlotComputer(root, leftover)
+    const created = makeCreateHandler(root, { runtime_type: 'docker', start: false, auto_allocate_proxy: false })
+    await created.handlePanel({ method: 'POST' }, {}, new URL('http://localhost/api/panel/vms/create'))
+    assert.equal(created.response.status, 200, JSON.stringify(created.response.body))
+    assert.equal(created.response.body.data.vm.id, 'vm-01')
+    const saved = JSON.parse(fs.readFileSync(path.join(root, 'vms', 'vm-01.json'), 'utf8'))
+    assert.notEqual(saved.fingerprint.guest_machine_id, old.guest_machine_id)
+    assert.notEqual(saved.fingerprint.hostname, old.hostname)
+    const computer = ensureSlotComputer(root, saved)
+    assert.equal(computer.guest_machine_id, saved.fingerprint.guest_machine_id)
+    assert.notEqual(computer.mac, old.mac)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })

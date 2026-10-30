@@ -3500,6 +3500,8 @@ export function createPanelHandler(ctx) {
           return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         }
         let vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+        // Rotates the control-plane fingerprint only. The computer (hostname / machine-id / MAC)
+        // stays: its container was built with them. A new computer comes from a fresh rebuild.
         const generated = assignComputerFingerprint(cfg.paths.project, vm, {
           taken: takenFingerprintKeys(listVms(cfg.paths.project), { exceptId: id }),
         })
@@ -4086,7 +4088,8 @@ export function createPanelHandler(ctx) {
               locale: requestedLocale,
               runtime: { type: runtime },
             },
-            { taken: takenFingerprintKeys(existing) },
+            // No vms/<id>.json here, so a computer directory on disk is a deleted slot's leftover.
+            { taken: takenFingerprintKeys(existing), fresh: true },
           )
         } catch (e) {
           return json(res, 400, {

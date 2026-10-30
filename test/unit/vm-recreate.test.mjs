@@ -5,6 +5,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { buildRecreatedVmRecord, recreateVmFiles } from '../../src/lib/vm/vm-recreate.mjs'
+import { assignComputerFingerprint, ensureSlotComputer, fingerprintDir } from '../../src/lib/identity/slot-computer.mjs'
+import {
+  applyGeneratedFingerprint,
+  takenFingerprintKeys,
+  writeGuestMachineIdFile,
+} from '../../src/lib/identity/workstation-fingerprint.mjs'
 import { destroyVmRuntime } from '../../src/lib/vm/vm-runtime.mjs'
 
 test('recreated record keeps slot identity and drops credentials', () => {
@@ -220,3 +226,70 @@ test('destroy missing container is a no-op', () => {
   assert.equal(r.ok, true)
   assert.equal(r.action, 'absent')
 })
+
+function slotWithComputer(root, id, runtime) {
+  const base = { id, name: id.slice(3), kernel: 'ubuntu-24.04', runtime: { type: runtime } }
+  const generated = assignComputerFingerprint(root, base, { taken: takenFingerprintKeys([]) })
+  const prev = { ...base, claude: { email: 'id@kin.test' }, fingerprint: applyGeneratedFingerprint({}, generated) }
+  fs.writeFileSync(path.join(root, 'vms', `${id}.json`), JSON.stringify(prev))
+  writeGuestMachineIdFile(root, id, generated.guest_machine_id)
+  return prev
+}
+
+function dirText(dir) {
+  const out = {}
+  for (const e of fs.readdirSync(dir, { withFileTypes: true, recursive: true })) {
+    if (e.isFile()) out[path.join(e.parentPath, e.name)] = fs.readFileSync(path.join(e.parentPath, e.name), 'utf8')
+  }
+  return out
+}
+
+// recreateVmFiles reseeds cli-home through /proc/self/fd (slot-seed.mjs).
+const seedable = { skip: process.platform !== 'linux' }
+
+for (const runtime of ['docker', 'kvm']) {
+  test(`${runtime}: keep rebuild leaves the computer and machine-id file untouched`, seedable, () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-recreate-keep-id-'))
+    try {
+      const id = 'vm-12'
+      const prev = slotWithComputer(root, id, runtime)
+      const dir = fingerprintDir(root, id)
+      const before = dirText(dir)
+      const { vm } = recreateVmFiles(root, prev, { mode: 'keep' })
+      assert.deepEqual(dirText(dir), before)
+      assert.equal(vm.fingerprint.hostname, prev.fingerprint.hostname)
+      assert.equal(vm.fingerprint.guest_machine_id, prev.fingerprint.guest_machine_id)
+      assert.equal(
+        fs.readFileSync(path.join(root, 'vms', id, 'machine-id'), 'utf8').trim(),
+        prev.fingerprint.guest_machine_id,
+      )
+      const read = ensureSlotComputer(root, vm)
+      assert.equal(read.created, false)
+      assert.equal(read.hostname, prev.fingerprint.hostname)
+      assert.equal(read.guest_machine_id, prev.fingerprint.guest_machine_id)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test(`${runtime}: fresh rebuild mints a new computer and rewrites the machine-id file`, seedable, () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-recreate-fresh-id-'))
+    try {
+      const id = 'vm-13'
+      const prev = slotWithComputer(root, id, runtime)
+      const { vm } = recreateVmFiles(root, prev)
+      assert.notEqual(vm.fingerprint.guest_machine_id, prev.fingerprint.guest_machine_id)
+      assert.notEqual(vm.fingerprint.hostname, prev.fingerprint.hostname)
+      const computer = ensureSlotComputer(root, vm)
+      assert.equal(computer.created, false)
+      assert.equal(computer.hostname, vm.fingerprint.hostname)
+      assert.equal(computer.guest_machine_id, vm.fingerprint.guest_machine_id)
+      assert.equal(
+        fs.readFileSync(path.join(root, 'vms', id, 'machine-id'), 'utf8').trim(),
+        vm.fingerprint.guest_machine_id,
+      )
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+}

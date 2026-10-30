@@ -11,6 +11,13 @@ import { workstationFamily, workstationKernel, workstationSkuId } from './workst
 export const HOSTNAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 export const DEVICE_ID_RE = /^[0-9a-f]{64}$/i
 export const MACHINE_ID_RE = /^[0-9a-f]{32}$/i
+/**
+ * DMI defaults firmware ships when the vendor never filled the field. Slugged they
+ * pass HOSTNAME_RE (`system-product-name-53a439`), so syntax alone cannot tell a
+ * machine name from a placeholder. A trailing `-<hex>` is the machine-id suffix.
+ */
+const PLACEHOLDER_HOST_RE =
+  /^(?:system-product-name|system-version|system-manufacturer|system-serial-number|system-sku(?:-number)?|sku|base-board-product-name|base-board-manufacturer|base-board-version|default-string|default|to-be-filled-by-o-e-m|to-be-filled-by-oem|o-e-m|oem|not-specified|not-applicable|not-available|n-a|none|null|undefined|unknown|invalid|type1productconfigid|x-xx|kvm|qemu|bochs|red-hat)(?:-[0-9a-f]{4,12})?$/
 export const STANDARD_LOCALE = 'en_US.UTF-8'
 /** Locales a slot may be created with; the guest sees it as LANG and in the fingerprint. */
 export const SLOT_LOCALES = Object.freeze([STANDARD_LOCALE, 'zh_CN.UTF-8', 'ja_JP.UTF-8', 'C.UTF-8'])
@@ -21,6 +28,21 @@ export function isHexDeviceId(value) {
 
 export function isGeneratedHostname(value) {
   return HOSTNAME_RE.test(String(value || '').trim())
+}
+
+/** Lowercase, one `-` between alphanumeric runs: the binary's hostname slug. */
+export function hostnameSlug(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+/** A DMI placeholder a guest must never present as its hostname, raw or slugged. */
+export function isPlaceholderHostname(value) {
+  const text = hostnameSlug(value)
+  return !text || PLACEHOLDER_HOST_RE.test(text)
 }
 
 export function guestMachineIdPath(projectRoot, vmId) {
@@ -103,6 +125,10 @@ export function applyGeneratedFingerprint(prev = {}, generated = {}) {
   return next
 }
 
+function readMachineIdFile(file) {
+  return fs.readFileSync(file, 'utf8').trim().toLowerCase()
+}
+
 export function writeGuestMachineIdFile(projectRoot, vmId, machineId) {
   const id = String(machineId || '')
     .trim()
@@ -119,12 +145,15 @@ export function writeGuestMachineIdFile(projectRoot, vmId, machineId) {
   return dest
 }
 
+/** The mount source for the guest /etc/machine-id; rewritten when it lags the slot record. */
 export function ensureGuestMachineIdFile(projectRoot, vm) {
-  const id = String(vm?.fingerprint?.guest_machine_id || '').trim()
+  const id = String(vm?.fingerprint?.guest_machine_id || '')
+    .trim()
+    .toLowerCase()
   if (!MACHINE_ID_RE.test(id) || !vm?.id || !projectRoot) return null
   const dest = guestMachineIdPath(projectRoot, vm.id)
   try {
-    if (fs.existsSync(dest) && fs.statSync(dest).isFile()) return dest
+    if (fs.statSync(dest).isFile() && readMachineIdFile(dest) === id) return dest
   } catch {}
   return writeGuestMachineIdFile(projectRoot, vm.id, id)
 }

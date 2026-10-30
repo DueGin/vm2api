@@ -615,7 +615,8 @@ export async function commitVmPackage({
     const generated = assignComputerFingerprint(
       projectRoot,
       { id, kernel: spec.vm.kernel, timezone: spec.vm.timezone, locale: spec.vm.locale, runtime: { type: 'docker' } },
-      { taken: takenFingerprintKeys(existing) },
+      // A free id may still have a deleted slot's computer directory on disk.
+      { taken: takenFingerprintKeys(existing), fresh: true },
     )
     vm = {
       id,

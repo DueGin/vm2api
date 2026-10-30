@@ -11,6 +11,7 @@ import { readWorkerCredentialFile } from '../../src/lib/oauth/oauth-credentials.
 import { readCodexAccounts } from '../../src/lib/vm/codex-slot.mjs'
 import { isLocalEgressProxy } from '../../src/lib/vm/egress.mjs'
 import { buildVmPackage, parseVmPackage } from '../../src/lib/vm/vm-package.mjs'
+import { ensureSlotComputer } from '../../src/lib/identity/slot-computer.mjs'
 
 function claudePackage(id, token = 'sk-ant-oat01-PACKAGE') {
   return buildVmPackage({
@@ -324,4 +325,28 @@ test('admin export returns the SOCKS password', async (t) => {
   assert.equal(got.response.body.data.proxy.password, 's3cret')
   assert.equal(got.response.body.data.credential.export.accounts[0].credentials.access_token, 'sk-ant-oat01-PACKAGE')
   assert.equal(got.response.body.data.vm.id, 'vm-pkg')
+})
+
+test('import mints its own computer: the same package twice never shares an identity', async (t) => {
+  const seen = []
+  for (const tag of ['a', 'b']) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `kin-vm-pkg-id-${tag}-`))
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+    const { handlePanel, response } = makeHandler(root, claudePackage('vm-02'), { pool: makePool(t) })
+    await handlePanel({ method: 'POST' }, {}, new URL('http://localhost/api/panel/vms/package'))
+    assert.equal(response.status, 201, response.body?.error?.message)
+    const saved = JSON.parse(fs.readFileSync(path.join(root, 'vms', 'vm-02.json'), 'utf8'))
+    const computer = ensureSlotComputer(root, saved)
+    assert.equal(computer.created, false)
+    assert.equal(computer.hostname, saved.fingerprint.hostname)
+    assert.equal(computer.guest_machine_id, saved.fingerprint.guest_machine_id)
+    assert.equal(
+      fs.readFileSync(path.join(root, 'vms', 'vm-02', 'machine-id'), 'utf8').trim(),
+      saved.fingerprint.guest_machine_id,
+    )
+    seen.push(computer)
+  }
+  assert.notEqual(seen[0].guest_machine_id, seen[1].guest_machine_id)
+  assert.notEqual(seen[0].hostname, seen[1].hostname)
+  assert.notEqual(seen[0].mac, seen[1].mac)
 })
