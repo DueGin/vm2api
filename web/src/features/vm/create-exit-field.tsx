@@ -47,7 +47,7 @@ export function useCreateExit(nodeId: string): CreateExit {
   const poolLimit = readPositive(
     tot,
     'bind_limit',
-    readPositive(cfg, 'bind_limit', 5)
+    readPositive(cfg, 'bind_limit', 1)
   )
   const labelOpts = useLocalProxyLabelOpts(nodeId || null)
   const open = sortedProxiesByAvailability(proxies, '', poolLimit).filter(

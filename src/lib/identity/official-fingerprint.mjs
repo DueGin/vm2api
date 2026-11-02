@@ -1,4 +1,8 @@
-/** Official CLI IDs come from CLAUDE_CONFIG_DIR when configured; slot-generated UUIDs never replace them. */
+/**
+ * Official CLI IDs come from CLAUDE_CONFIG_DIR when configured; slot-generated UUIDs never replace them.
+ * The install userID is the device id the CLI puts on every request and 1P event, so it is the
+ * slot's device_id. A legacy machineID only stands in when no userID exists.
+ */
 import fs from 'node:fs'
 import path from 'node:path'
 import { atomicWriteJson, listVmRecordFiles } from '../vm/vm-file.mjs'
@@ -7,18 +11,17 @@ export const OFFICIAL_IDENTITY_SOURCE = 'official-cc-init'
 
 const STALE_FP_KEYS = Object.freeze(['machineID', 'userID', 'machineId', 'userId'])
 
-// Current CLI writes only userID; older inits also wrote machineID. Prefer a doc carrying both.
+// Slots launch the CLI with CLAUDE_CONFIG_DIR=~/.claude, so its own file (nested) is the
+// identity. A home-level ~/.claude.json is a leftover from older inits and only answers when
+// the CLI's file has no userID yet. A legacy machineID no longer makes a doc win.
 function readClaudeIdentityDocument(homeDir) {
-  let userOnly = null
-  for (const file of [path.join(homeDir, '.claude.json'), path.join(homeDir, '.claude', '.claude.json')]) {
+  for (const file of [path.join(homeDir, '.claude', '.claude.json'), path.join(homeDir, '.claude.json')]) {
     try {
       const doc = JSON.parse(fs.readFileSync(file, 'utf8'))
-      if (!doc?.userID) continue
-      if (doc.machineID) return doc
-      userOnly ??= doc
+      if (doc?.userID) return doc
     } catch {}
   }
-  return userOnly || {}
+  return {}
 }
 
 export function readOfficialCcIdentity(homeDir) {
@@ -37,13 +40,24 @@ export function readOfficialCcIdentity(homeDir) {
   }
 }
 
+const HEX64 = /^[0-9a-f]{64}$/i
+
+/** The id the CLI sends as device_id: userID, else a legacy machineID. */
+export function officialDeviceIdOf(official = {}) {
+  const user = String(official.user_id || official.userID || '').trim()
+  if (HEX64.test(user)) return user.toLowerCase()
+  const machine = String(official.machine_id || official.machineID || '').trim()
+  return machine || null
+}
+
 export function reconcileFingerprint(prev = {}, official = {}) {
   const next = { ...(prev && typeof prev === 'object' ? prev : {}) }
   for (const key of STALE_FP_KEYS) delete next[key]
   const machine = official.machine_id || official.machineID || null
   const user = official.user_id || official.userID || null
+  const device = officialDeviceIdOf(official)
+  if (device) next.device_id = device
   if (machine) {
-    next.device_id = machine
     next.official_machine_id = machine
     if (next.machine_id && next.machine_id !== machine) {
       next.guest_machine_id = next.guest_machine_id || next.machine_id
@@ -87,12 +101,13 @@ export function applyOfficialFingerprintToVm(vmPath, homeDir) {
   const prev = vm.fingerprint && typeof vm.fingerprint === 'object' ? vm.fingerprint : {}
   const next = official.machine_id || official.user_id ? reconcileFingerprint(prev, official) : prev
   const identityPath = path.join(homeDir, '.claude', 'kin-identity.json')
+  const officialDevice = officialDeviceIdOf(official)
   let identityWrote = false
-  if (fs.existsSync(identityPath) && official.machine_id) {
+  if (fs.existsSync(identityPath) && officialDevice) {
     try {
       const ident = JSON.parse(fs.readFileSync(identityPath, 'utf8'))
-      if (ident.device_id !== official.machine_id) {
-        ident.device_id = official.machine_id
+      if (ident.device_id !== officialDevice) {
+        ident.device_id = officialDevice
         if (official.user_id) ident.user_id = official.user_id
         if (official.account_uuid) ident.account_uuid = official.account_uuid
         ident.source = OFFICIAL_IDENTITY_SOURCE
@@ -129,7 +144,7 @@ export function applyOfficialFingerprintToVm(vmPath, homeDir) {
     wrote: changed || leftover.removed || identityWrote,
     official: !!(official.machine_id || official.user_id),
     leftover,
-    replaced_device: !!(official.machine_id && prev.device_id && prev.device_id !== official.machine_id),
+    replaced_device: !!(officialDevice && prev.device_id && prev.device_id !== officialDevice),
   }
 }
 

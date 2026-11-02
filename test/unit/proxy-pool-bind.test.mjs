@@ -74,13 +74,22 @@ test('clampBindLimit defaults to 5 and stays in 1..32', () => {
   assert.equal(clampBindLimit('x'), MAX_VMS_PER_PROXY)
 })
 
-test('bind_limit defaults to 5 and is configurable', () => {
+test('bind_limit defaults to one slot per exit and is configurable', () => {
   const pool = makePool()
   pool.importLines('10.0.0.1:1080')
   const id = pool.snapshot().proxies[0].id
-  assert.equal(pool.bindLimit(), 5)
-  assert.equal(pool.snapshot().config.bind_limit, 5)
-  for (let i = 1; i <= 5; i++) {
+  assert.equal(MAX_VMS_PER_PROXY, 1)
+  assert.equal(pool.bindLimit(), 1)
+  assert.equal(pool.snapshot().config.bind_limit, 1)
+  assert.equal(pool.bind(id, 'vm-01').ok, true)
+  const one = pool.bind(id, 'vm-02')
+  assert.equal(one.ok, false)
+  assert.equal(one.error, 'proxy_bind_limit')
+  assert.equal(one.max, 1)
+
+  assert.equal(pool.updateConfig({ bind_limit: 5 }).ok, true)
+  pool.stopScheduler()
+  for (let i = 2; i <= 5; i++) {
     const r = pool.bind(id, `vm-0${i}`)
     assert.equal(r.ok, true, `bind vm-0${i}`)
   }
@@ -104,6 +113,38 @@ test('bind_limit defaults to 5 and is configurable', () => {
   assert.equal(pool.bind(id, 'vm-02').ok, true)
   assert.equal(pool.bind(id, 'vm-03').ok, false)
   assert.equal(pool.bind(id, 'vm-03').max, 2)
+})
+
+test('two rows that resolve to one exit IP share its limit', () => {
+  const pool = makePool()
+  pool.importLines('10.0.0.11:1080\n10.0.0.12:1080\n10.0.0.13:1080')
+  const [a, b, c] = pool.snapshot().proxies.map((p) => p.id)
+  for (const p of pool.state.proxies) p.status = 'ok'
+  // Same provider gateway behind two ports: one observed address.
+  pool.state.proxies.find((p) => p.id === a).geo_ip = '203.0.113.7'
+  pool.state.proxies.find((p) => p.id === b).geo_ip = '203.0.113.7'
+  pool.state.proxies.find((p) => p.id === c).geo_ip = '198.51.100.9'
+
+  assert.equal(pool.bind(a, 'vm-01').ok, true)
+  assert.equal(pool.bind(c, 'vm-02').ok, true)
+  const shared = pool.bind(b, 'vm-02')
+  assert.equal(shared.ok, false)
+  assert.equal(shared.error, 'proxy_exit_ip_shared')
+  assert.equal(shared.exit_ip, '203.0.113.7')
+  assert.deepEqual(shared.bound_vm_ids, ['vm-01'])
+  // A refused move leaves the slot where it was.
+  assert.equal(pool.getProxyForVm('vm-02')?.id, c)
+
+  // Auto-assignment skips the row whose address is already taken.
+  assert.equal(pool.allocateForVm('vm-03'), null)
+
+  // Rebinding the same slot onto a sibling row of its own address is not "sharing".
+  assert.equal(pool.bind(b, 'vm-01').ok, true)
+  assert.equal(pool.getProxyForVm('vm-01')?.id, b)
+
+  assert.equal(pool.updateConfig({ bind_limit: 2 }).ok, true)
+  pool.stopScheduler()
+  assert.equal(pool.bind(a, 'vm-04').ok, true)
 })
 
 test('remove deletes a proxy and updateConfig rejects bad bind_limit', () => {
