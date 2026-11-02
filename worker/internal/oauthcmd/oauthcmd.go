@@ -116,9 +116,12 @@ func Run(args []string, stdin io.Reader, stdout io.Writer) int {
 	var response *upstream.Response
 	switch op {
 	case "usage":
-		response, err = client.Get(ctx, "/api/oauth/usage", headers)
+		// usage.ts: axios GET, UA getClaudeCodeUserAgent(), OAuth auth headers incl. the beta.
+		response, err = client.GetCLIAxios(ctx, "/api/oauth/usage", claudeCodeUserAgent(cfg), oauthBeta)
 	case "profile":
-		response, err = client.Get(ctx, "/api/oauth/profile", headers)
+		// getOauthProfileFromOauthToken: axios GET with only Authorization + Content-Type;
+		// the native loop never runs init(), so the UA is axios's own.
+		response, err = client.GetCLIAxios(ctx, "/api/oauth/profile", kinoauth.CLIAxiosUserAgent, "")
 	case "models":
 		response, err = client.Get(ctx, "/v1/models?limit=1000", headers)
 	case "count-tokens":
@@ -197,13 +200,24 @@ func oauthHTTPClient(cfg config.Config) (*http.Client, error) {
 	return upstream.NewOAuthHTTPClient(cfg.ProxyURL, cfg.ProxyRequired, requestTimeout)
 }
 
+const oauthBeta = "oauth-2025-04-20"
+
 func requestHeaders(cfg config.Config, op string) map[string]string {
 	headers := map[string]string{"user-agent": userAgent(cfg)}
 	switch op {
 	case "usage", "profile", "models", "reset-status", "reset-redeem":
-		headers["anthropic-beta"] = "oauth-2025-04-20"
+		headers["anthropic-beta"] = oauthBeta
 	}
 	return headers
+}
+
+// claudeCodeUserAgent is getClaudeCodeUserAgent(): `claude-code/<version>`, no entrypoint.
+func claudeCodeUserAgent(cfg config.Config) string {
+	version := strings.TrimSpace(cfg.CLIVersion)
+	if version == "" {
+		version = "2.1.303"
+	}
+	return "claude-code/" + version
 }
 
 func userAgent(cfg config.Config) string {
