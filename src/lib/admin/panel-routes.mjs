@@ -253,7 +253,6 @@ import {
   writeGuestMachineIdFile,
 } from '../identity/workstation-fingerprint.mjs'
 import { assignComputerFingerprint } from '../identity/slot-computer.mjs'
-import { slotEntrypoint } from '../identity/vm-identity.mjs'
 import { accountIdentity, hasAccountIdentity, writeSlotUserId } from '../identity/slot-device-identity.mjs'
 import { runFleetUpdate, fleetStatus } from '../vm/fleet-update.mjs'
 import {
@@ -4542,7 +4541,7 @@ export function createPanelHandler(ctx) {
           }
           if (body.auth_scheme || body.authScheme) oauth.auth_scheme = body.auth_scheme || body.authScheme
           if (oauth.access_token && !wantsApiKey && !oauthFromVm) {
-            oauth = await enrichOauthIdentity(oauth, { proxyUrl, entrypoint: slotEntrypoint(ctx.routingConfig) })
+            oauth = await enrichOauthIdentity(oauth, { proxyUrl })
           }
           const committed = await commitImportedOauth({
             vmId,
@@ -4763,10 +4762,7 @@ export function createPanelHandler(ctx) {
           }
           if (body.auth_scheme || body.authScheme) oauth.auth_scheme = body.auth_scheme || body.authScheme
           if (oauth.access_token && !oauthFromVm) {
-            oauth = await enrichOauthIdentity(oauth, {
-              proxyUrl: slotProxy.proxyUrl,
-              entrypoint: slotEntrypoint(ctx.routingConfig),
-            })
+            oauth = await enrichOauthIdentity(oauth, { proxyUrl: slotProxy.proxyUrl })
           }
           const committed = await commitImportedOauth({
             vmId: id,

@@ -57,6 +57,13 @@ SSH 扩展槽同样由控制面经绑定出口换票。拿到授权后，提交�
 10. 目录 / 模型列表 **不** hop worker `/v1/models`。
 11. 槽内 cli-node（kernel 拉起的 native 槽、面板运维终端里的 `claude`、初装 hello / `/usage` / 常驻、`setup-token`）带 `CLAUDE_CODE_HOST_REFRESH=1` 和 `CLAUDE_CODE_VERSION`：临期或 401 时只重读 `credentials.json`，不请求 token 端点，不写回凭证。否则它与 host 同用一个轮换 RT，后到的一方拿 `invalid_grant`，且其写回会丢掉 `kinGeneration`。
 
+12. worker 代槽内 CLI 发的请求必须和 CLI 自己发出的一样，否则同一账号在同一出口上会出现两种客户端。对照 cli-node 2.1.303 在 native 槽位路径下的抓包（`worker/internal/upstream/testdata`）：
+    - TLS：Bun 1.3.14 / BoringSSL 的 ClientHello（`tls_bun.go`），无 GREASE，扩展顺序固定，ALPN 只有 `http/1.1`，握手补齐到 512 字节。refresh / usage / profile / count_tokens 都用它，不再模拟 Chrome。
+    - refresh：axios POST `platform.claude.com/v1/oauth/token`，UA `axios/1.15.0`；头顺序为 `Accept, Accept-Encoding: gzip, compress, deflate, br, Content-Type, User-Agent, Connection: keep-alive, Host, Content-Length`；body 字段顺序 `grant_type, refresh_token, client_id, scope`。token 的 scopes 含 `user:inference` 时，`scope` 发默认的五项，否则发 token 自身的 scopes。
+    - usage：axios GET，UA `claude-code/<版本>`，带 `anthropic-beta: oauth-2025-04-20`。profile：axios GET，UA `axios/1.15.0`，不带 beta。两者都不带 `anthropic-version` 和 `x-stainless-*`。
+    - count_tokens：走 SDK 路径 `/v1/messages/count_tokens?beta=true`，带 SDK 的 `x-app` 和 `x-stainless-*`。
+    - 控制面导入时直接发出的 bootstrap，头与 CLI 的 axios 一致（UA `claude-code/<版本>`）；但 TLS 仍是 Node 的，只在导入缺身份的 access token 时发一次。
+
 过期且无 refresh 的槽不入调度池。面板「网页可用」与调度选槽同一套资格。
 
 ## 网络不变量

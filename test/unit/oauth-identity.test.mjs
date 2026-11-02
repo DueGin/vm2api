@@ -85,7 +85,7 @@ test('enrichOauthIdentity fetches bootstrap when helper only returned tokens', a
     {
       proxyUrl: 'socks5h://127.0.0.1:1',
       fetchImpl: async (url, init) => {
-        seen.push({ url, method: init.method, auth: init.headers.authorization })
+        seen.push({ url, method: init.method, auth: init.headers.Authorization, headers: init.headers })
         return {
           ok: true,
           status: 200,
@@ -104,6 +104,16 @@ test('enrichOauthIdentity fetches bootstrap when helper only returned tokens', a
   assert.equal(seen[0].url, CLAUDE_CLI_BOOTSTRAP_URL)
   assert.equal(seen[0].method, 'GET')
   assert.equal(seen[0].auth, 'Bearer sk-ant-oat01-NEED')
+  // cli-node 2.1.303 bootstrap.ts (axios GET), captured: same keys, same order, no SDK headers.
+  assert.deepEqual(Object.entries(seen[0].headers), [
+    ['Accept', 'application/json, text/plain, */*'],
+    ['Accept-Encoding', 'gzip, compress, deflate, br'],
+    ['Authorization', 'Bearer sk-ant-oat01-NEED'],
+    ['Content-Type', 'application/json'],
+    ['User-Agent', 'claude-code/2.1.303'],
+    ['anthropic-beta', 'oauth-2025-04-20'],
+    ['Connection', 'keep-alive'],
+  ])
   assert.equal(out.email, 'boot@example.com')
   assert.equal(out.account_uuid, 'acct-boot')
   assert.equal(out.org_uuid, 'org-boot')

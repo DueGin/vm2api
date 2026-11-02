@@ -39,16 +39,11 @@ func NewHTTPClient(proxyURL string, proxyRequired bool, timeout time.Duration) (
 	if err != nil {
 		return nil, err
 	}
-	// Inference: Node.js 24 / Claude Code ClientHello + HTTP/2. Not Chrome.
+	// Inference: the slot CLI's own ClientHello (Bun / BoringSSL, HTTP/1.1).
 	// SOCKS dial only — req/v3 owns the uTLS handshake (same as OAuth).
 	// timeout<=0 disables req/v3's default overall deadline (2m) so long
 	// thinking/streams are bounded only by Pump first-byte + idle.
-	client := req.C().
-		SetTimeout(timeout).
-		SetTLSFingerprintSpec(node24ClientHelloSpecValue).
-		SetCookieJar(nil).
-		SetProxy(noProxy).
-		SetDial(dialContext)
+	client := slotCLIClient(timeout, dialContext)
 	httpClient := client.GetClient()
 	httpClient.Timeout = timeout
 	httpClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
@@ -57,11 +52,14 @@ func NewHTTPClient(proxyURL string, proxyRequired bool, timeout time.Duration) (
 	return httpClient, nil
 }
 
-// NewOAuthHTTPClient mirrors Sub2API's Claude OAuth transport: Chrome TLS
-// impersonation over the slot-bound SOCKS5 dialer. SetProxyURL is not used —
-// that made req/v3 TCP-dial the proxy and then SOCKS-CONNECT to the proxy
-// itself (pcap 2026-08-19). The impersonate client must Dial through kinproxy
-// with the upstream host as the CONNECT target.
+// NewOAuthHTTPClient is the slot CLI's OAuth transport: the same Bun ClientHello
+// and HTTP/1.1 the CLI's axios uses for refresh / usage / profile, over the
+// slot-bound SOCKS5 dialer. (It used to impersonate Chrome after Sub2API; a
+// Chrome handshake under an axios / claude-cli UA is a client that does not
+// exist, and it differs from the account's own inference traffic.)
+// SetProxyURL is not used — that made req/v3 TCP-dial the proxy and then
+// SOCKS-CONNECT to the proxy itself (pcap 2026-08-19). The client must Dial
+// through kinproxy with the upstream host as the CONNECT target.
 func NewOAuthHTTPClient(proxyURL string, proxyRequired bool, timeout time.Duration) (*http.Client, error) {
 	if strings.TrimSpace(proxyURL) == "" {
 		if proxyRequired {
@@ -80,26 +78,28 @@ func NewOAuthHTTPClient(proxyURL string, proxyRequired bool, timeout time.Durati
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
-	client := req.C().
-		SetTimeout(timeout).
-		ImpersonateChrome().
-		SetCookieJar(nil).
-		SetProxy(noProxy).
-		SetDial(dialContext)
+	client := slotCLIClient(timeout, dialContext).EnableAutoDecompress()
 	client.GetClient().CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return errors.New("OAuth redirects are disabled")
 	}
 	return client.GetClient(), nil
 }
 
-func NewTransparentHTTPClient(timeout time.Duration) (*http.Client, error) {
-	dial := (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext
-	client := req.C().
+// slotCLIClient: req/v3 client with the slot CLI's ClientHello. ALPN offers
+// only http/1.1, so HTTP/2 is never negotiated; ForceHTTP1 makes that explicit.
+func slotCLIClient(timeout time.Duration, dial func(context.Context, string, string) (net.Conn, error)) *req.Client {
+	return req.C().
 		SetTimeout(timeout).
-		SetTLSFingerprintSpec(node24ClientHelloSpecValue).
+		SetTLSFingerprintSpec(bunClientHelloSpec).
+		EnableForceHTTP1().
 		SetCookieJar(nil).
 		SetProxy(noProxy).
 		SetDial(dial)
+}
+
+func NewTransparentHTTPClient(timeout time.Duration) (*http.Client, error) {
+	dial := (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	client := slotCLIClient(timeout, dial)
 	httpClient := client.GetClient()
 	httpClient.Timeout = timeout
 	httpClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
@@ -113,12 +113,7 @@ func NewTransparentOAuthHTTPClient(timeout time.Duration) (*http.Client, error) 
 		timeout = 60 * time.Second
 	}
 	dial := (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext
-	client := req.C().
-		SetTimeout(timeout).
-		ImpersonateChrome().
-		SetCookieJar(nil).
-		SetProxy(noProxy).
-		SetDial(dial)
+	client := slotCLIClient(timeout, dial).EnableAutoDecompress()
 	client.GetClient().CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return errors.New("OAuth redirects are disabled")
 	}
@@ -200,7 +195,8 @@ func (c *Client) CountTokens(ctx context.Context, payload json.RawMessage, heade
 	if err != nil {
 		return nil, err
 	}
-	return c.do(ctx, http.MethodPost, "/v1/messages/count_tokens", payload, headers, credentialValue)
+	// The CLI counts through the SDK's beta.messages.countTokens: same path with ?beta=true.
+	return c.do(ctx, http.MethodPost, "/v1/messages/count_tokens?beta=true", payload, headers, credentialValue)
 }
 
 func (c *Client) Get(ctx context.Context, path string, headers map[string]string) (*Response, error) {
@@ -209,6 +205,42 @@ func (c *Client) Get(ctx context.Context, path string, headers map[string]string
 		return nil, err
 	}
 	return c.do(ctx, http.MethodGet, path, nil, headers, credentialValue)
+}
+
+// GetCLIAxios is a GET the way the slot CLI's axios makes it (usage, profile,
+// bootstrap): axios Accept / Accept-Encoding, Content-Type, its header order,
+// and no anthropic-version or x-stainless-* (those belong to the SDK path).
+func (c *Client) GetCLIAxios(ctx context.Context, path string, userAgent string, beta string) (*Response, error) {
+	if c.HTTP == nil {
+		return nil, errors.New("upstream HTTP client is not configured")
+	}
+	cred, err := c.ensureCredential(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	target, err := c.resolve(path)
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build upstream request: %w", err)
+	}
+	applyCredentialAuth(request, cred)
+	request.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(beta) != "" {
+		request.Header["anthropic-beta"] = []string{beta}
+	}
+	kinoauth.SetCLIAxiosHeaders(request, userAgent)
+	response, err := c.HTTP.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("upstream transport: %w", err)
+	}
+	return &Response{
+		Status: response.StatusCode,
+		Header: response.Header.Clone(),
+		Body:   response.Body,
+	}, nil
 }
 
 func (c *Client) Post(ctx context.Context, path string, payload []byte, headers map[string]string) (*Response, error) {

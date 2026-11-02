@@ -15,9 +15,96 @@ import (
 	"time"
 
 	"github.com/dofastted/kin-gateway/worker/internal/credential"
+	"github.com/imroc/req/v3"
 )
 
 const DefaultClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+
+// The slot CLI (cli-node 2.1.303) refreshes with its bundled axios 1.15.0. Its
+// native loop skips init(), so axios keeps its own default UA. Captured request:
+//
+//	POST /v1/oauth/token HTTP/1.1
+//	Accept: application/json, text/plain, */*
+//	Accept-Encoding: gzip, compress, deflate, br
+//	Content-Type: application/json
+//	User-Agent: axios/1.15.0
+//	Connection: keep-alive
+//	Host: platform.claude.com
+//	Content-Length: N
+//
+//	{"grant_type":"refresh_token","refresh_token":"…","client_id":"…","scope":"…"}
+const (
+	cliAxiosUserAgent = "axios/1.15.0"
+	// CLIAxiosUserAgent is exported for profile, which also keeps axios's own UA.
+	CLIAxiosUserAgent      = cliAxiosUserAgent
+	cliAxiosAccept         = "application/json, text/plain, */*"
+	cliAxiosAcceptEncoding = "gzip, compress, deflate, br"
+)
+
+// DefaultRefreshScopes is CLAUDE_AI_OAUTH_SCOPES, the CLI's scope when the token has none recorded.
+var DefaultRefreshScopes = []string{
+	"user:profile",
+	"user:inference",
+	"user:sessions:claude_code",
+	"user:mcp_servers",
+	"user:file_upload",
+}
+
+// CLIAxiosHeaderOrder is the CLI axios wire order; req/v3 writes headers in it.
+var CLIAxiosHeaderOrder = []string{
+	"accept",
+	"accept-encoding",
+	"authorization",
+	"content-type",
+	"user-agent",
+	"anthropic-beta",
+	"connection",
+	"host",
+	"content-length",
+}
+
+// refreshRequestBody keeps the CLI's JSON key order (Go maps would sort them).
+type refreshRequestBody struct {
+	GrantType    string `json:"grant_type"`
+	RefreshToken string `json:"refresh_token"`
+	ClientID     string `json:"client_id"`
+	Scope        string `json:"scope"`
+}
+
+// refreshScope follows checkAndRefreshOAuthTokenIfNeeded: a Claude.ai subscriber
+// token (scopes include user:inference, or none recorded) asks for the default
+// CLAUDE_AI_OAUTH_SCOPES; any other token asks for exactly what it holds.
+func refreshScope(current credential.Credential) string {
+	for _, scope := range current.Scopes {
+		if scope == "user:inference" {
+			return strings.Join(DefaultRefreshScopes, " ")
+		}
+	}
+	if len(current.Scopes) > 0 {
+		return strings.Join(current.Scopes, " ")
+	}
+	return strings.Join(DefaultRefreshScopes, " ")
+}
+
+// SetCLIAxiosHeaders gives a request the slot CLI's axios client headers in its order.
+// Callers set Content-Type, auth and anthropic-beta (lower-case key, as the CLI writes it).
+func SetCLIAxiosHeaders(request *http.Request, userAgent string) {
+	request.Header.Set("Accept", cliAxiosAccept)
+	request.Header.Set("Accept-Encoding", cliAxiosAcceptEncoding)
+	request.Header.Set("User-Agent", userAgent)
+	request.Header.Set("Connection", "keep-alive")
+	request.Header[req.HeaderOderKey] = CLIAxiosHeaderOrder
+}
+
+func marshalCLIJSON(value any) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false) // JSON.stringify does not escape <, > or &
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
 
 type Refresher struct {
 	Store     *credential.Store
@@ -208,12 +295,12 @@ func (r *Refresher) requestWithRetry(ctx context.Context, current credential.Cre
 }
 
 func (r *Refresher) request(ctx context.Context, current credential.Credential) (credential.Credential, error) {
-	payload := map[string]string{
-		"grant_type":    "refresh_token",
-		"refresh_token": current.RefreshToken,
-		"client_id":     r.clientID(),
-	}
-	body, err := json.Marshal(payload)
+	body, err := marshalCLIJSON(refreshRequestBody{
+		GrantType:    "refresh_token",
+		RefreshToken: current.RefreshToken,
+		ClientID:     r.clientID(),
+		Scope:        refreshScope(current),
+	})
 	if err != nil {
 		return credential.Credential{}, err
 	}
@@ -221,9 +308,8 @@ func (r *Refresher) request(ctx context.Context, current credential.Credential) 
 	if err != nil {
 		return credential.Credential{}, fmt.Errorf("build OAuth refresh request: %w", err)
 	}
-	request.Header.Set("Accept", "application/json, text/plain, */*")
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("User-Agent", "axios/1.13.6")
+	SetCLIAxiosHeaders(request, cliAxiosUserAgent)
 	response, err := r.Client.Do(request)
 	if err != nil {
 		return credential.Credential{}, fmt.Errorf("OAuth refresh transport: %w", err)

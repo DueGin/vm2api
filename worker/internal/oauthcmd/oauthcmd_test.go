@@ -97,8 +97,8 @@ func TestCountTokensReadsStdin(t *testing.T) {
 	var gotBody map[string]any
 	var gotBeta string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/v1/messages/count_tokens" {
-			t.Fatalf("path = %s", request.URL.Path)
+		if request.URL.Path != "/v1/messages/count_tokens" || request.URL.RawQuery != "beta=true" {
+			t.Fatalf("path = %s?%s", request.URL.Path, request.URL.RawQuery)
 		}
 		if err := json.NewDecoder(request.Body).Decode(&gotBody); err != nil {
 			t.Fatalf("decode body: %v", err)

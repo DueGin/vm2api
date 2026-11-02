@@ -6,22 +6,37 @@ import (
 	utls "github.com/refraction-networking/utls"
 )
 
-func node24ClientHelloSpecValue() utls.ClientHelloSpec {
+// bunClientHelloSpec is the ClientHello the slot's Claude Code (cli-node 2.1.303,
+// Bun 1.3.14 / BoringSSL) sends for every HTTPS call: axios (OAuth refresh,
+// usage, profile, bootstrap) and fetch (/v1/messages, count_tokens) are byte
+// for byte the same. No GREASE, a fixed extension order, ALPN http/1.1 only,
+// x25519-only key share, padded to a 512-byte handshake.
+//
+// Anything this worker sends for a slot account must use it: a Chrome or Go
+// ClientHello carrying an axios / claude-cli UA is a client that does not exist.
+// testdata/cli-node-2.1.303-clienthello.hex is the captured reference.
+func bunClientHelloSpec() utls.ClientHelloSpec {
 	return utls.ClientHelloSpec{
 		TLSVersMin: tls.VersionTLS12,
 		TLSVersMax: tls.VersionTLS13,
 		CipherSuites: []uint16{
+			tls.TLS_AES_128_GCM_SHA256,
 			tls.TLS_AES_256_GCM_SHA384,
 			tls.TLS_CHACHA20_POLY1305_SHA256,
-			tls.TLS_AES_128_GCM_SHA256,
 			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
 			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
 			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
 			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
 			tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
 			tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+			tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+			tls.TLS_RSA_WITH_AES_256_CBC_SHA,
 		},
 		CompressionMethods: []byte{0},
 		Extensions: []utls.TLSExtension{
@@ -35,7 +50,7 @@ func node24ClientHelloSpecValue() utls.ClientHelloSpec {
 			}},
 			&utls.SupportedPointsExtension{SupportedPoints: []byte{0}},
 			&utls.SessionTicketExtension{},
-			&utls.ALPNExtension{AlpnProtocols: []string{"h2", "http/1.1"}},
+			&utls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}},
 			&utls.StatusRequestExtension{},
 			&utls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: []utls.SignatureScheme{
 				utls.ECDSAWithP256AndSHA256,
@@ -46,6 +61,7 @@ func node24ClientHelloSpecValue() utls.ClientHelloSpec {
 				utls.PKCS1WithSHA384,
 				utls.PSSWithSHA512,
 				utls.PKCS1WithSHA512,
+				utls.PKCS1WithSHA1,
 			}},
 			&utls.SCTExtension{},
 			&utls.KeyShareExtension{KeyShares: []utls.KeyShare{
@@ -56,6 +72,7 @@ func node24ClientHelloSpecValue() utls.ClientHelloSpec {
 				tls.VersionTLS13,
 				tls.VersionTLS12,
 			}},
+			&utls.UtlsPaddingExtension{GetPaddingLen: utls.BoringPaddingStyle},
 		},
 	}
 }

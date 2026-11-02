@@ -5,7 +5,7 @@
  */
 import https from 'node:https'
 import { makeProxyFetch } from '../protocol/codex-models.mjs'
-import { OFFICIAL_CLI_VERSION, OFFICIAL_STAINLESS, officialClaudeCliUa } from '../identity/vm-identity.mjs'
+import { OFFICIAL_CLI_VERSION } from '../identity/vm-identity.mjs'
 import { BETA_OAUTH, BOOTSTRAP_URL } from './oauth-contract.mjs'
 
 const IPV4_AGENT = new https.Agent({ family: 4, keepAlive: false })
@@ -127,20 +127,22 @@ export function applyOauthIdentity(cred = {}, identity = {}) {
   return next
 }
 
-/** The slot's CLI makes this call with its own UA; the entrypoint follows the panel switch. */
-export function bootstrapRequestHeaders(accessToken, { entrypoint = 'cli' } = {}) {
+/**
+ * Headers of the slot CLI's own bootstrap call (bootstrap.ts, axios GET),
+ * captured from cli-node 2.1.303: axios Accept / Accept-Encoding, Content-Type,
+ * UA getClaudeCodeUserAgent() = `claude-code/<version>`, the OAuth beta.
+ * No anthropic-version and no x-stainless-*: those belong to the SDK path.
+ * Same order the CLI writes them; node-fetch keeps insertion order.
+ */
+export function bootstrapRequestHeaders(accessToken, { version = OFFICIAL_CLI_VERSION } = {}) {
   return {
-    accept: 'application/json',
-    authorization: `Bearer ${String(accessToken || '').trim()}`,
-    'user-agent': officialClaudeCliUa(OFFICIAL_CLI_VERSION, entrypoint),
+    Accept: 'application/json, text/plain, */*',
+    'Accept-Encoding': 'gzip, compress, deflate, br',
+    Authorization: `Bearer ${String(accessToken || '').trim()}`,
+    'Content-Type': 'application/json',
+    'User-Agent': `claude-code/${version}`,
     'anthropic-beta': BETA_OAUTH,
-    'anthropic-version': '2023-06-01',
-    'x-stainless-lang': OFFICIAL_STAINLESS.stainless_lang,
-    'x-stainless-os': OFFICIAL_STAINLESS.stainless_os,
-    'x-stainless-arch': OFFICIAL_STAINLESS.stainless_arch,
-    'x-stainless-runtime': OFFICIAL_STAINLESS.stainless_runtime,
-    'x-stainless-runtime-version': OFFICIAL_STAINLESS.stainless_runtime_version,
-    'x-stainless-package-version': OFFICIAL_STAINLESS.stainless_package_version,
+    Connection: 'keep-alive',
   }
 }
 
@@ -149,7 +151,6 @@ export async function fetchOauthBootstrapAccount({
   proxyUrl = null,
   fetchImpl = null,
   timeoutMs = 15000,
-  entrypoint = 'cli',
 } = {}) {
   const token = String(accessToken || '').trim()
   if (!token) return { ok: false, reason: 'no_access_token' }
@@ -162,7 +163,7 @@ export async function fetchOauthBootstrapAccount({
   try {
     const res = await fetchFn(CLAUDE_CLI_BOOTSTRAP_URL, {
       method: 'GET',
-      headers: bootstrapRequestHeaders(token, { entrypoint }),
+      headers: bootstrapRequestHeaders(token),
     })
     if (!res || typeof res.ok !== 'boolean') return { ok: false, reason: 'bootstrap_no_response' }
     if (!res.ok) return { ok: false, reason: `http_${res.status || 0}` }
@@ -178,7 +179,7 @@ export async function fetchOauthBootstrapAccount({
 }
 
 /** Flatten first. Only fetch bootstrap when email / account / org is still missing. */
-export async function enrichOauthIdentity(cred, { proxyUrl = null, fetchImpl = null, entrypoint = 'cli' } = {}) {
+export async function enrichOauthIdentity(cred, { proxyUrl = null, fetchImpl = null } = {}) {
   const fromCred = flattenOauthIdentity(cred)
   let next = applyOauthIdentity(cred, fromCred)
   if (oauthIdentityComplete(fromCred)) return next
@@ -188,7 +189,6 @@ export async function enrichOauthIdentity(cred, { proxyUrl = null, fetchImpl = n
     accessToken: access,
     proxyUrl,
     fetchImpl,
-    entrypoint,
   })
   if (!fetched.ok) return next
   return applyOauthIdentity(next, fetched.identity)
