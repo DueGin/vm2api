@@ -1,7 +1,8 @@
 /**
  * SOCKS5 Proxy Pool (SQLite-backed)
  * - Bulk import
- * - 1 proxy ↔ up to N VMs (`config.bind_limit`, default 5)
+ * - 1 proxy ↔ up to N VMs (`config.bind_limit`, default 1: one account per exit IP).
+ *   Rows that resolve to the same observed exit IP share that limit.
  * - Auto-assign a proxy with remaining capacity on VM create
  * - Health probe every 5/10/30/60 min
  * - On failure: disable proxy + disable bound VM scheduling
@@ -31,7 +32,9 @@ import { normalizeSocksHost, socksEndpoint, socksProxyUrl, socksProxyFamily } fr
 import { proxyBlockedReason } from './proxy-policy.mjs'
 import { canRevealClusterNodes, annotatePublicLocalProxy } from './local-proxy-nodes.mjs'
 
-export const MAX_VMS_PER_PROXY = 5
+// One slot per exit by default: two accounts on one IP are linked by that IP.
+// Saved pool configs keep their own bind_limit; this only seeds new installs.
+export const MAX_VMS_PER_PROXY = 1
 export const BIND_LIMIT_MIN = 1
 export const BIND_LIMIT_MAX = 32
 export const PROXY_LABEL_MAX = 64
@@ -129,6 +132,11 @@ export function proxyGeoOf(proxy) {
     checked_at: proxy.geo_checked_at || null,
     error: proxy.geo_error || null,
   }
+}
+
+/** Observed exit IP of a row, '' when it has not been geo-checked. */
+export function proxyExitIp(proxy) {
+  return String(proxy?.geo_ip || '').trim()
 }
 
 export function proxyGeoV6Of(proxy) {
@@ -404,6 +412,21 @@ export class ProxyPool extends EventEmitter {
 
   bindLimit() {
     return clampBindLimit(this.state.config?.bind_limit, MAX_VMS_PER_PROXY)
+  }
+
+  /**
+   * VMs (other than `vmId`) already leaving through the same observed exit IP
+   * as row `p`, counting every row that resolved to that IP. Two SOCKS rows
+   * from one provider can land on one address; the limit is per address.
+   */
+  vmsOnExitIp(p, vmId = null) {
+    const ip = proxyExitIp(p)
+    const ids = new Set()
+    for (const x of this.state.proxies) {
+      if (x !== p && (!ip || proxyExitIp(x) !== ip)) continue
+      for (const id of boundVmIdsOf(x)) if (id !== vmId) ids.add(id)
+    }
+    return [...ids]
   }
 
   snapshot({ ownerUserId = undefined } = {}) {
@@ -748,7 +771,7 @@ export class ProxyPool extends EventEmitter {
       if (isLocalEgressProxy(p) && p.id !== localTarget) return false
       if (!p.enabled || p.status === 'dead' || p.status === 'fail') return false
       if (proxyBlockedReason(p, this.state.config.ipv6_enabled)) return false
-      if (boundVmIdsOf(p).length >= limit) return false
+      if (this.vmsOnExitIp(p, vmId).length >= limit) return false
       return proxyOwnerId(p) === owner
     })
     candidates.sort((a, b) => {
@@ -778,6 +801,14 @@ export class ProxyPool extends EventEmitter {
     const blocked = proxyBlockedReason(p, this.state.config.ipv6_enabled)
     if (blocked) return { ok: false, error: blocked }
     if (!vm) return { ok: false, error: 'vm_id_required' }
+    if (!force && !boundVmIdsOf(p).includes(vm)) {
+      // Checked before the slot leaves its current row, so a refusal changes nothing.
+      const limit = this.bindLimit()
+      const sharing = this.vmsOnExitIp(p, vm)
+      if (sharing.length >= limit && proxyExitIp(p)) {
+        return { ok: false, error: 'proxy_exit_ip_shared', max: limit, exit_ip: proxyExitIp(p), bound_vm_ids: sharing }
+      }
+    }
     for (const x of this.state.proxies) {
       if (x.id === proxyId) continue
       const ids = boundVmIdsOf(x)

@@ -205,6 +205,7 @@ import {
   kernelForIndex,
   normalizeTimezone,
   nextNumericIndex,
+  officialCcUidGid,
   padVm,
   STANDARD_LOCALE,
 } from '../vm/vm-runtime.mjs'
@@ -252,6 +253,8 @@ import {
   writeGuestMachineIdFile,
 } from '../identity/workstation-fingerprint.mjs'
 import { assignComputerFingerprint } from '../identity/slot-computer.mjs'
+import { slotEntrypoint } from '../identity/vm-identity.mjs'
+import { accountIdentity, hasAccountIdentity, writeSlotUserId } from '../identity/slot-device-identity.mjs'
 import { runFleetUpdate, fleetStatus } from '../vm/fleet-update.mjs'
 import {
   captureWrapSample,
@@ -3443,6 +3446,14 @@ export function createPanelHandler(ctx) {
           }
           const vm =
             patchVmRecord(cfg.paths.project, id, (record) => {
+              // The device id stays with the slot; remember whose it was so the
+              // next import can tell a returning account from a new user.
+              if (!isCodexVm(record) && hasAccountIdentity(record.claude)) {
+                record.fingerprint = {
+                  ...(record.fingerprint && typeof record.fingerprint === 'object' ? record.fingerprint : {}),
+                  departed_account: accountIdentity(record.claude),
+                }
+              }
               record.email = null
               record.account_uuid = null
               record.org_uuid = null
@@ -3511,11 +3522,31 @@ export function createPanelHandler(ctx) {
         vm.updated_at = generated.reset_at
         atomicWriteJson(vmPath, vm, { mode: 0o600 })
         writeGuestMachineIdFile(cfg.paths.project, id, generated.guest_machine_id)
-        applyOfficialFingerprintToVm(vmPath, path.join(cfg.paths.project, 'vms', id, 'cli-home'))
+        const homeDir = path.join(cfg.paths.project, 'vms', id, 'cli-home')
+        // The CLI's userID is the device id on the wire. Without moving it too,
+        // the reconcile below would put the old id straight back.
+        let userIdSynced = false
+        if (slotHost(vm).kind === 'local') {
+          try {
+            userIdSynced = writeSlotUserId(homeDir, vm.fingerprint.device_id, officialCcUidGid(id)).wrote
+          } catch {}
+        }
+        applyOfficialFingerprintToVm(vmPath, homeDir)
         try {
           vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
         } catch {}
-        return json(res, 200, panel.ok({ id, fingerprint: vm.fingerprint }))
+        return json(
+          res,
+          200,
+          panel.ok({
+            id,
+            fingerprint: vm.fingerprint,
+            cli_user_id_synced: userIdSynced,
+            // A running CLI keeps the old id in memory until its process restarts.
+            restart_required: userIdSynced,
+            ...(slotHost(vm).kind === 'local' ? {} : { warning: 'node_slot_cli_user_id_not_synced' }),
+          }),
+        )
       }
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/reconcile-fingerprint$/.test(p)) {
         const id = p.split('/')[4]
@@ -3856,6 +3887,7 @@ export function createPanelHandler(ctx) {
           projectRoot: cfg.paths.project,
           parsed: parseVmPackage(body),
           mode: 'update',
+          allowSharedAccount: body?.allow_shared_account === true,
           targetId: id,
           owner: { role: panelIdentity(req).role, userId: req.panelUserId },
           proxyPool,
@@ -3904,6 +3936,7 @@ export function createPanelHandler(ctx) {
           projectRoot: cfg.paths.project,
           parsed,
           mode: 'create',
+          allowSharedAccount: body?.allow_shared_account === true,
           owner: { role: ident.role, userId: req.panelUserId },
           proxyPool,
           occupied: historic,
@@ -4509,7 +4542,7 @@ export function createPanelHandler(ctx) {
           }
           if (body.auth_scheme || body.authScheme) oauth.auth_scheme = body.auth_scheme || body.authScheme
           if (oauth.access_token && !wantsApiKey && !oauthFromVm) {
-            oauth = await enrichOauthIdentity(oauth, { proxyUrl })
+            oauth = await enrichOauthIdentity(oauth, { proxyUrl, entrypoint: slotEntrypoint(ctx.routingConfig) })
           }
           const committed = await commitImportedOauth({
             vmId,
@@ -4518,6 +4551,7 @@ export function createPanelHandler(ctx) {
             oauth,
             source: oauth.source || 'sessionKey-cookie-auth',
             name: body.name,
+            allowSharedAccount: body.allow_shared_account === true,
           })
           if (!committed.ok) {
             return json(res, committed.status || 502, { ok: false, error: committed.error })
@@ -4729,7 +4763,10 @@ export function createPanelHandler(ctx) {
           }
           if (body.auth_scheme || body.authScheme) oauth.auth_scheme = body.auth_scheme || body.authScheme
           if (oauth.access_token && !oauthFromVm) {
-            oauth = await enrichOauthIdentity(oauth, { proxyUrl: slotProxy.proxyUrl })
+            oauth = await enrichOauthIdentity(oauth, {
+              proxyUrl: slotProxy.proxyUrl,
+              entrypoint: slotEntrypoint(ctx.routingConfig),
+            })
           }
           const committed = await commitImportedOauth({
             vmId: id,
@@ -4738,6 +4775,7 @@ export function createPanelHandler(ctx) {
             oauth,
             source: oauth.source || 'oauth-auth-url',
             name: body.name,
+            allowSharedAccount: body.allow_shared_account === true,
           })
           if (!committed.ok) {
             return json(res, committed.status || 502, { ok: false, error: committed.error })
@@ -4815,6 +4853,7 @@ export function createPanelHandler(ctx) {
           oauth,
           source: oauth.source || 'sub2api-account-export',
           skipOfficialCc: true,
+          allowSharedAccount: body?.allow_shared_account === true,
         })
         if (!committed.ok) {
           return json(res, committed.status || 502, { ok: false, error: committed.error })
@@ -5853,10 +5892,12 @@ export function createPanelHandler(ctx) {
         if (!result.ok) {
           const message =
             result.error === 'proxy_bind_limit'
-              ? `SOCKS5 最多绑定 ${result.max || 5} 台虚拟机`
-              : result.error === 'local_proxy_node_mismatch'
-                ? LOCAL_PROXY_MISMATCH_MESSAGE
-                : result.error
+              ? `SOCKS5 最多绑定 ${result.max || 1} 台虚拟机`
+              : result.error === 'proxy_exit_ip_shared'
+                ? `出口 IP ${result.exit_ip} 已被 ${result.bound_vm_ids.join('、')} 使用（另一条 SOCKS5 解析到同一出口），每个出口最多 ${result.max} 台虚拟机`
+                : result.error === 'local_proxy_node_mismatch'
+                  ? LOCAL_PROXY_MISMATCH_MESSAGE
+                  : result.error
           return json(res, 400, {
             ok: false,
             error: { type: 'invalid_request_error', code: result.error, message, details: result },

@@ -21,6 +21,8 @@ import { ensureSlotClaudeOwnership, chownSlotRuntimeFile, replaceSlotOwnedFile }
 import { materializeWrapCli } from './wrap-cli-runtime.mjs'
 import { ensureGuestMachineIdFile } from '../identity/workstation-fingerprint.mjs'
 import { ensureSlotComputer, rememberComputer } from '../identity/slot-computer.mjs'
+import { seedSlotUserId } from '../identity/slot-device-identity.mjs'
+import { officialClaudeCliUa, slotEntrypoint } from '../identity/vm-identity.mjs'
 import { coerceRfc4122Uuid } from '../identity/rfc4122-uuid.mjs'
 import { boundProxyUrl, ensureProxyEgress, isLocalEgressProxy, slotNetworkForVm } from './egress.mjs'
 import { socksProxyEndpoint } from './socks-address.mjs'
@@ -580,6 +582,8 @@ export function writeWorkerFiles(vm, projectRoot, { transparent, routing } = {})
     runtime_kind: runtimeKind(vm),
     cli_version: profileForPreset(resolveSlotPersonaPreset(vm, resolvedRouting)).cliVersion,
   }
+  // usage / profile / reset calls carry the same UA entrypoint as the slot CLI's inference.
+  workerConfig.oauth_user_agent = officialClaudeCliUa(workerConfig.cli_version, slotEntrypoint(resolvedRouting))
   if (onEgress || local) workerConfig.egress_mode = 'transparent'
   if (testEndpoints) {
     const anthropicBaseUrl = String(process.env.KIN_ANTHROPIC_BASE_URL || '').trim()
@@ -971,6 +975,13 @@ export async function startVmRuntime(vm, projectRoot, { recreate = false, routin
     ensureSlotClaudeOwnership(home, runtimeUidNum(vm), Number(GID))
   } catch (error) {
     if (!kvm) throw error
+  }
+  if (!isCodexVm(vm)) {
+    // The CLI mints its own install id on first run; hand it the slot's first
+    // so requests, 1P events and the slot record share one device id.
+    try {
+      seedSlotUserId(home, vm.fingerprint?.device_id, { uid: runtimeUidNum(vm), gid: Number(GID) })
+    } catch {}
   }
 
   const proxy = ensureOuterSocks(vm)

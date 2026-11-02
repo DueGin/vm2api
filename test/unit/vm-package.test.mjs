@@ -84,9 +84,11 @@ function makeHandler(project, body, { pool, role = 'admin', panelUsers = null } 
   return { handlePanel, response }
 }
 
-function makePool(t) {
+function makePool(t, { bindLimit = null } = {}) {
   const db = createDatabase({ dbPath: ':memory:' })
   const pool = new ProxyPool({ db })
+  // Default is one slot per exit; tests that share an exit on purpose say so.
+  if (bindLimit != null) pool.updateConfig({ bind_limit: bindLimit })
   t.after(() => {
     pool.stopScheduler()
     db.close()
@@ -135,7 +137,7 @@ test('package export keeps a window whose stored fields are partly invalid', () 
 test('import creates the slot and rolls a colliding id forward', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-vm-pkg-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
-  const pool = makePool(t)
+  const pool = makePool(t, { bindLimit: 5 })
   const doc = claudePackage('vm-pkg')
   const first = makeHandler(root, doc, { pool })
   await first.handlePanel({ method: 'POST' }, {}, new URL('http://localhost/api/panel/vms/package'))
@@ -158,7 +160,7 @@ test('import creates the slot and rolls a colliding id forward', async (t) => {
   assert.equal(cred.access_token, 'sk-ant-oat01-PACKAGE')
   assert.equal(pool.ensureSocks({ host: '10.2.2.2', port: 1080, username: 'alice', password: 's3cret' }).created, false)
 
-  const again = makeHandler(root, doc, { pool })
+  const again = makeHandler(root, { ...doc, allow_shared_account: true }, { pool })
   await again.handlePanel({ method: 'POST' }, {}, new URL('http://localhost/api/panel/vms/package'))
   assert.equal(again.response.status, 201, again.response.body?.error?.message)
   assert.equal(again.response.body.data.renamed_from, 'vm-pkg')
@@ -170,6 +172,23 @@ test('import creates the slot and rolls a colliding id forward', async (t) => {
   assert.equal(moved.proxy.host, '10.2.2.2')
   assert.equal(moved.timezone, 'Asia/Tokyo')
   assert.equal(moved.name, 'finished')
+})
+
+test('importing an account that another slot holds is refused without creating a slot', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-vm-pkg-dup-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const pool = makePool(t, { bindLimit: 5 })
+  const first = makeHandler(root, claudePackage('vm-pkg'), { pool })
+  await first.handlePanel({ method: 'POST' }, {}, new URL('http://localhost/api/panel/vms/package'))
+  assert.equal(first.response.status, 201, first.response.body?.error?.message)
+
+  // Same account (email) exported and imported as a second slot.
+  const dup = makeHandler(root, claudePackage('vm-copy', 'sk-ant-oat01-OTHER'), { pool })
+  await dup.handlePanel({ method: 'POST' }, {}, new URL('http://localhost/api/panel/vms/package'))
+  assert.equal(dup.response.status, 409)
+  assert.equal(dup.response.body.error.code, 'account_bound_elsewhere')
+  assert.equal(dup.response.body.error.vm_id, 'vm-pkg')
+  assert.equal(fs.existsSync(path.join(root, 'vms', 'vm-copy.json')), false)
 })
 
 test('write-back updates the current slot and leaves runtime counters', async (t) => {
@@ -205,7 +224,7 @@ test('write-back updates the current slot and leaves runtime counters', async (t
 test('local egress imports as px-local and codex tokens stay out of vm.json', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-vm-pkg-kind-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
-  const pool = makePool(t)
+  const pool = makePool(t, { bindLimit: 5 })
   const local = claudePackage('vm-local')
   local.proxy = { kind: 'local' }
   const localRes = makeHandler(root, local, { pool })

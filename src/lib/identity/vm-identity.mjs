@@ -21,7 +21,8 @@ export function readJsonSafe(p, fallback = null) {
 
 /** Official Claude Code version shared by Node identity and the slot CLI wire. */
 export const OFFICIAL_CLI_VERSION = '2.1.303'
-export const OFFICIAL_CLAUDE_CLI_UA = `claude-cli/${OFFICIAL_CLI_VERSION} (external, sdk-cli)`
+/** Shipped cc_entrypoint is `cli` (see ccEntrypointFromRouting); the default UA matches it. */
+export const OFFICIAL_CLAUDE_CLI_UA = `claude-cli/${OFFICIAL_CLI_VERSION} (external, cli)`
 export const OFFICIAL_STAINLESS = Object.freeze({
   stainless_lang: 'js',
   stainless_os: 'Linux',
@@ -34,6 +35,31 @@ export const OFFICIAL_STAINLESS = Object.freeze({
 export function officialClaudeCliUa(version = OFFICIAL_CLI_VERSION, entrypoint = 'cli') {
   const m = String(version || '').match(/(\d+\.\d+\.\d+)/)
   return `claude-cli/${m ? m[1] : OFFICIAL_CLI_VERSION} (external, ${entrypoint === 'cli' ? 'cli' : 'sdk-cli'})`
+}
+
+/** Panel cc_entrypoint switch. Only an explicit `sdk-cli` leaves the shipped `cli` default. */
+export function slotEntrypoint(routing) {
+  return routing?.compatibility?.cc_entrypoint === 'sdk-cli' ? 'sdk-cli' : 'cli'
+}
+
+/**
+ * Non-auth headers of a first-party API call made by the slot's CLI. Anything
+ * the control plane sends for a slot account uses these, so the account never
+ * shows a UA / client the CLI itself would not send.
+ */
+export function officialCliApiHeaders({ entrypoint = 'cli', version = OFFICIAL_CLI_VERSION } = {}) {
+  return {
+    'user-agent': officialClaudeCliUa(version, entrypoint),
+    'x-app': 'cli',
+    'x-stainless-lang': OFFICIAL_STAINLESS.stainless_lang,
+    'x-stainless-os': OFFICIAL_STAINLESS.stainless_os,
+    'x-stainless-arch': OFFICIAL_STAINLESS.stainless_arch,
+    'x-stainless-runtime': OFFICIAL_STAINLESS.stainless_runtime,
+    'x-stainless-runtime-version': OFFICIAL_STAINLESS.stainless_runtime_version,
+    'x-stainless-package-version': OFFICIAL_STAINLESS.stainless_package_version,
+    'x-stainless-retry-count': '0',
+    'x-stainless-timeout': '600',
+  }
 }
 
 export function formatMetadataUserId({ deviceId, accountUuid, sessionId }) {
@@ -74,9 +100,18 @@ export function loadVmIdentity(exec = {}) {
 
   const timezone = fp.timezone || exec.timezone || 'UTC'
   const locale = fp.locale || exec.locale || 'en_US.UTF-8'
-  // Slot fingerprint is the only device source. Leftover ~/.claude.json
-  // machineID is never outbound — guest collect also never rotates device_id.
-  const deviceId = outboundDeviceId(fp.device_id, exec.vmId || 'kin-vm')
+  // The CLI's install userID is what it sends as device_id on its own
+  // requests and 1P events, so metadata.user_id carries the same value.
+  // A new account gets a new userID (import rotates it), so this is never a
+  // previous account's id. Before the CLI has one, the slot fingerprint
+  // (seeded into .claude.json at start) stands in. A legacy machineID is never used.
+  // Slots run the CLI with CLAUDE_CONFIG_DIR=~/.claude: the nested file is its own.
+  const cliUserId = isHexDeviceId(dirClaude.userID)
+    ? String(dirClaude.userID).toLowerCase()
+    : isHexDeviceId(homeClaude.userID)
+      ? String(homeClaude.userID).toLowerCase()
+      : ''
+  const deviceId = cliUserId || outboundDeviceId(fp.device_id, exec.vmId || 'kin-vm')
   const sessionId = fp.session_id || crypto.randomUUID()
   const slotCred = readSlotCredentialIdentity(home)
   // Slot worker credentials.json is the only credential location.
@@ -125,7 +160,7 @@ export function loadVmIdentity(exec = {}) {
     metadataUserId: formatMetadataUserId({ deviceId, accountUuid, sessionId }),
     userAgent,
     fingerprint: {
-      device_id: fp.device_id || deviceId,
+      device_id: cliUserId || fp.device_id || deviceId,
       session_id: sessionId,
       user_agent: userAgent,
       ...OFFICIAL_STAINLESS,

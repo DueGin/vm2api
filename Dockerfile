@@ -1,5 +1,7 @@
-# Control plane. Only source is in git: the console and kin-api-kernel build here; the
-# slot payloads and Go helpers come from the release pinned in deploy/payload.json.
+# Control plane. Only source is in git: the console, kin-api-kernel and kin-worker build here;
+# the other slot payloads and Go helpers come from the release pinned in deploy/payload.json.
+# kin-worker is built from source (as the ARM64 image already does) so its OAuth / usage
+# client fingerprint follows this tree; it replaces the payload copy in image-bin.
 
 FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web
 RUN npm install -g pnpm@10
@@ -16,6 +18,10 @@ COPY api-kernel/go.mod api-kernel/go.sum ./api-kernel/
 RUN cd api-kernel && go mod download
 COPY api-kernel/ ./api-kernel/
 RUN cd api-kernel && go build -buildvcs=false -trimpath -o /out/kin-api-kernel ./cmd/kin-api-kernel
+COPY worker/go.mod worker/go.sum ./worker/
+RUN cd worker && go mod download
+COPY worker/ ./worker/
+RUN cd worker && go build -buildvcs=false -trimpath -o /out/kin-worker ./cmd/kin-worker
 
 FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS payload
 WORKDIR /src

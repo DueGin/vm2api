@@ -434,10 +434,10 @@ export function applyCrsIdentityReplace(body, identity, inbound = {}, reqHeaders
   delete out.user
   delete out.user_id
 
-  const raw = inbound?.metadata?.user_id || body?.metadata?.user_id
-  const parsed = parseUserId(raw) || {}
   const deviceId = identity.deviceId || identity.machineId || ''
-  const accountUuid = identity.accountUuid || parsed.account_uuid || ''
+  // Only the slot's own account. A caller's account_uuid names some other
+  // account; with no slot account (API key / unidentified grant) send '' as the CLI does.
+  const accountUuid = identity.accountUuid || ''
   const officialClient = opts.officialClient === true
   const sessionId =
     String(opts.sessionId || '').trim() ||

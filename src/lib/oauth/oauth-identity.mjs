@@ -3,9 +3,12 @@
  * Flatten helper/token shapes, then fill gaps from claude_cli/bootstrap.
  * This is part of ticket exchange, not official Claude Code first-run.
  */
+import https from 'node:https'
 import { makeProxyFetch } from '../protocol/codex-models.mjs'
-import { OFFICIAL_STAINLESS } from '../identity/vm-identity.mjs'
-import { BETA_OAUTH, BOOTSTRAP_UA, BOOTSTRAP_URL } from './oauth-contract.mjs'
+import { OFFICIAL_CLI_VERSION, OFFICIAL_STAINLESS, officialClaudeCliUa } from '../identity/vm-identity.mjs'
+import { BETA_OAUTH, BOOTSTRAP_URL } from './oauth-contract.mjs'
+
+const IPV4_AGENT = new https.Agent({ family: 4, keepAlive: false })
 
 export const CLAUDE_CLI_BOOTSTRAP_URL = BOOTSTRAP_URL
 
@@ -124,11 +127,12 @@ export function applyOauthIdentity(cred = {}, identity = {}) {
   return next
 }
 
-export function bootstrapRequestHeaders(accessToken) {
+/** The slot's CLI makes this call with its own UA; the entrypoint follows the panel switch. */
+export function bootstrapRequestHeaders(accessToken, { entrypoint = 'cli' } = {}) {
   return {
     accept: 'application/json',
     authorization: `Bearer ${String(accessToken || '').trim()}`,
-    'user-agent': BOOTSTRAP_UA,
+    'user-agent': officialClaudeCliUa(OFFICIAL_CLI_VERSION, entrypoint),
     'anthropic-beta': BETA_OAUTH,
     'anthropic-version': '2023-06-01',
     'x-stainless-lang': OFFICIAL_STAINLESS.stainless_lang,
@@ -145,15 +149,20 @@ export async function fetchOauthBootstrapAccount({
   proxyUrl = null,
   fetchImpl = null,
   timeoutMs = 15000,
+  entrypoint = 'cli',
 } = {}) {
   const token = String(accessToken || '').trim()
   if (!token) return { ok: false, reason: 'no_access_token' }
   if (proxyUrl == null && !fetchImpl) return { ok: false, reason: 'proxy_required' }
-  const fetchFn = fetchImpl || makeProxyFetch(proxyUrl, timeoutMs)
+  const direct = !String(proxyUrl || '').trim()
+  const baseFetch = fetchImpl || makeProxyFetch(proxyUrl, timeoutMs)
+  // A local exit has no proxy URL. Slot networks are IPv4-only, so a direct
+  // call must not leave over the host's IPv6 address.
+  const fetchFn = direct && !fetchImpl ? (url, init = {}) => baseFetch(url, { ...init, agent: IPV4_AGENT }) : baseFetch
   try {
     const res = await fetchFn(CLAUDE_CLI_BOOTSTRAP_URL, {
       method: 'GET',
-      headers: bootstrapRequestHeaders(token),
+      headers: bootstrapRequestHeaders(token, { entrypoint }),
     })
     if (!res || typeof res.ok !== 'boolean') return { ok: false, reason: 'bootstrap_no_response' }
     if (!res.ok) return { ok: false, reason: `http_${res.status || 0}` }
@@ -169,7 +178,7 @@ export async function fetchOauthBootstrapAccount({
 }
 
 /** Flatten first. Only fetch bootstrap when email / account / org is still missing. */
-export async function enrichOauthIdentity(cred, { proxyUrl = null, fetchImpl = null } = {}) {
+export async function enrichOauthIdentity(cred, { proxyUrl = null, fetchImpl = null, entrypoint = 'cli' } = {}) {
   const fromCred = flattenOauthIdentity(cred)
   let next = applyOauthIdentity(cred, fromCred)
   if (oauthIdentityComplete(fromCred)) return next
@@ -179,6 +188,7 @@ export async function enrichOauthIdentity(cred, { proxyUrl = null, fetchImpl = n
     accessToken: access,
     proxyUrl,
     fetchImpl,
+    entrypoint,
   })
   if (!fetched.ok) return next
   return applyOauthIdentity(next, fetched.identity)

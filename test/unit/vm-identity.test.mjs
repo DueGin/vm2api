@@ -177,16 +177,17 @@ test('loadVmIdentity copies guest locale and timezone onto fingerprint', () => {
   assert.equal(id.settings.env.LANG, 'en_US.UTF-8')
 })
 
-test('existing fingerprint device_id is not overwritten by leftover machineID', () => {
+test('outbound device_id is the CLI userID; a legacy machineID never goes out', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-mid-'))
   const home = path.join(root, 'cli-home')
   fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
   const leftover = '24a52e29' + 'ab'.repeat(28)
+  const cliUser = 'cc'.repeat(32)
   fs.writeFileSync(
     path.join(home, '.claude', '.claude.json'),
     JSON.stringify({
       machineID: leftover,
-      userID: 'cc'.repeat(32),
+      userID: cliUser,
     }),
   )
   const id = loadVmIdentity({
@@ -194,11 +195,24 @@ test('existing fingerprint device_id is not overwritten by leftover machineID', 
     homeDir: home,
     vm: { fingerprint: { device_id: 'dev-keep', session_id: 'sess-keep' } },
   })
-  const expected = crypto.createHash('sha256').update('dev-keep').digest('hex')
-  assert.equal(id.deviceId, expected)
+  // Same value the CLI puts on its own requests and 1P events.
+  assert.equal(id.deviceId, cliUser)
   assert.notEqual(id.deviceId, leftover)
-  assert.equal(id.fingerprint.device_id, 'dev-keep')
+  assert.equal(JSON.parse(id.metadataUserId).device_id, cliUser)
   assert.equal(id.sessionId, 'sess-keep')
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('before the CLI has a userID the slot fingerprint stands in', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-mid-none-'))
+  const home = path.join(root, 'cli-home')
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+  const id = loadVmIdentity({
+    vmId: 'vm-01',
+    homeDir: home,
+    vm: { fingerprint: { device_id: 'dev-keep', session_id: 'sess-keep' } },
+  })
+  assert.equal(id.deviceId, crypto.createHash('sha256').update('dev-keep').digest('hex'))
   fs.rmSync(root, { recursive: true, force: true })
 })
 

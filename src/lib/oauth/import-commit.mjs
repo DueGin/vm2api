@@ -5,7 +5,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { withVmLock } from '../vm/vm-file.mjs'
+import { atomicWriteJson, withVmLock } from '../vm/vm-file.mjs'
 import {
   adoptVmProxyBinding,
   bindVmProxy,
@@ -28,7 +28,17 @@ import {
   officialCcUidGid,
   scheduleOfficialCcBootstrap,
   materializeOfficialClaudeCredentials,
+  wipeOfficialFirstUseHome,
 } from './official-cc-bootstrap.mjs'
+import {
+  accountBoundElsewhereError,
+  findSlotHoldingAccount,
+  newDeviceId,
+  previousSlotAccount,
+  rotatedFingerprint,
+  sameAccount,
+  writeSlotUserId,
+} from '../identity/slot-device-identity.mjs'
 import { normalizeTiers } from '../pool/quota-tiers.mjs'
 import { slotHost } from '../vm/slot-host.mjs'
 import { finishOAuthImport } from './guest-oauth-helper.mjs'
@@ -63,6 +73,21 @@ export function createImportCommit(ctx) {
     return { ok: true, proxyUrl: resolved.proxyUrl, resolved }
   }
 
+  /**
+   * Fill identity gaps from the slot record only when the new grant is
+   * provably the same account. An unidentified grant never inherits the
+   * previous account: metadata.user_id.account_uuid must belong to this token.
+   */
+  function carriedIdentity(identity, existing) {
+    const prev = existing?.claude && typeof existing.claude === 'object' ? existing.claude : {}
+    const same = sameAccount(identity, prev) === true
+    return {
+      email: identity.email || (same ? prev.email : null) || null,
+      account_uuid: identity.account_uuid || (same ? prev.account_uuid : null) || null,
+      org_uuid: identity.org_uuid || (same ? prev.org_uuid : null) || null,
+    }
+  }
+
   function importedCredentialFromOauth(oauth, existing) {
     const mode = credentialModeFromOauth(oauth)
     const auth_scheme = resolveAuthScheme({
@@ -81,9 +106,7 @@ export function createImportCommit(ctx) {
         refresh_token: null,
         expires_at: null,
         base_url: oauth.base_url || oauth.baseUrl || 'https://api.anthropic.com',
-        email: identity.email || existing.claude?.email || null,
-        account_uuid: identity.account_uuid || existing.claude?.account_uuid || null,
-        org_uuid: identity.org_uuid || existing.claude?.org_uuid || null,
+        ...carriedIdentity(identity, existing),
         scopes: [],
         auth_scheme,
       }
@@ -97,9 +120,7 @@ export function createImportCommit(ctx) {
         oauth.expires_at ||
         oauth.expiresAt ||
         (oauth.expires_in ? Math.floor(Date.now() / 1000) + Number(oauth.expires_in) : null),
-      email: identity.email || existing.claude?.email || null,
-      account_uuid: identity.account_uuid || existing.claude?.account_uuid || null,
-      org_uuid: identity.org_uuid || existing.claude?.org_uuid || null,
+      ...carriedIdentity(identity, existing),
       subscription_type:
         identity.subscription_type || normalizeSubscriptionType(existing?.claude?.account_tier) || 'pro',
       account_tier: normalizeSubscriptionType(existing?.claude?.account_tier) || 'pro',
@@ -145,12 +166,52 @@ export function createImportCommit(ctx) {
     }
   }
 
-  async function commitImportedOauthGrant({ vmId, vmPath, existing, oauth, source, name, skipOfficialCc = false }) {
+  /**
+   * A new account on a used slot is a new user of the same computer: a new
+   * device id in the slot record and in the CLI's .claude.json, and the
+   * previous user's history wiped. The computer (hostname / machine-id / MAC)
+   * and the exit stay. Only local slots: a node's CLI home is not mirrored here.
+   */
+  async function rotateSlotDeviceForNewAccount(vmId, vmPath, existing, homeDir) {
+    if (slotHost(existing).kind !== 'local') return { rotated: false, reason: 'remote_slot' }
+    const ids = officialCcUidGid(vmId)
+    const deviceId = newDeviceId()
+    await withVmLock(vmPath, () => {
+      const record = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+      record.fingerprint = rotatedFingerprint(record.fingerprint, { deviceId })
+      record.updated_at = record.fingerprint.updated_at
+      atomicWriteJson(vmPath, record, { mode: 0o600 })
+      existing.fingerprint = record.fingerprint
+    })
+    wipeOfficialFirstUseHome(homeDir, ids)
+    writeSlotUserId(homeDir, deviceId, { reset: true, ...ids })
+    return { rotated: true }
+  }
+
+  async function commitImportedOauthGrant({
+    vmId,
+    vmPath,
+    existing,
+    oauth,
+    source,
+    name,
+    skipOfficialCc = false,
+    allowSharedAccount = false,
+  }) {
     const importedCredential = importedCredentialFromOauth(oauth, existing)
+    const homeDir = path.join(ctx.cfg.paths.project, 'vms', vmId, 'cli-home')
+    const holder = allowSharedAccount
+      ? null
+      : findSlotHoldingAccount(ctx.cfg.paths.project, importedCredential, { exceptId: vmId })
+    if (holder) return { ok: false, status: 409, error: accountBoundElsewhereError(holder) }
+    const accountChanged = sameAccount(importedCredential, previousSlotAccount(existing, homeDir)) === false
+    const deviceRotation = accountChanged
+      ? await rotateSlotDeviceForNewAccount(vmId, vmPath, existing, homeDir)
+      : { rotated: false, reason: 'same_or_unknown_account' }
     const workerExec = {
       vmId,
       vm: existing,
-      homeDir: path.join(ctx.cfg.paths.project, 'vms', vmId, 'cli-home'),
+      homeDir,
     }
     const bound = ctx.proxyPool?.getProxyForVm?.(vmId)
     if (bound) {
@@ -166,8 +227,10 @@ export function createImportCommit(ctx) {
       const ready = legacy
         ? !!existing.runtime?.worker_socket && fs.existsSync(existing.runtime.worker_socket)
         : rustKernelReachable(health) || rustKernelBusy(health)
-      if (desynced || !ready) {
-        const prepare = desynced || legacy ? reloadSlotReady : startSlotReady
+      // A rotated device id only reaches the resident CLI through a fresh process.
+      const reload = desynced || deviceRotation.rotated
+      if (reload || !ready) {
+        const prepare = reload || legacy ? reloadSlotReady : startSlotReady
         const boot = await prepare(existing, ctx.cfg.paths.project, {
           routing: routing(),
           allowMissingCredential: true,
@@ -269,7 +332,7 @@ export function createImportCommit(ctx) {
             email: importedCredential.email,
           },
         })
-    return { ok: true, existing, official_cc_bootstrap: officialCc }
+    return { ok: true, existing, official_cc_bootstrap: officialCc, device_identity: deviceRotation }
   }
   async function commitImportedOauth(options) {
     let result

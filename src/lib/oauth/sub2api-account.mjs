@@ -7,6 +7,7 @@
 import { normalizeOauth } from './oauth-credentials.mjs'
 import { credentialModeFromOauth, looksLikeConsoleApiKey } from './credential-mode.mjs'
 import { resolveAuthScheme } from './auth-scheme.mjs'
+import { sameAccount } from '../identity/slot-device-identity.mjs'
 
 export function pickSub2apiAccount(doc = {}) {
   if (!doc || typeof doc !== 'object') return null
@@ -24,11 +25,17 @@ export function sub2apiAccountToOauth(doc = {}, existing = {}) {
         ? doc.credentials
         : doc
   const extra = account.extra && typeof account.extra === 'object' ? account.extra : {}
+  const email = cred.email || cred.email_address || extra.email_address || null
+  const accountUuid = cred.account_uuid || extra.account_uuid || null
+  // The slot's previous identity fills gaps only for the same account; an
+  // unidentified export never takes over another account's uuid.
+  const prev = existing?.claude && typeof existing.claude === 'object' ? existing.claude : {}
+  const same = sameAccount({ email, account_uuid: accountUuid }, prev) === true
   const n = normalizeOauth({
     ...cred,
-    email: cred.email || cred.email_address || extra.email_address || existing.claude?.email,
-    account_uuid: cred.account_uuid || extra.account_uuid || existing.claude?.account_uuid,
-    org_uuid: cred.org_uuid || extra.org_uuid || existing.claude?.org_uuid,
+    email: email || (same ? prev.email : undefined),
+    account_uuid: accountUuid || (same ? prev.account_uuid : undefined),
+    org_uuid: cred.org_uuid || extra.org_uuid || (same ? prev.org_uuid : undefined),
     source: 'sub2api-account-export',
   })
   const scopes = Array.isArray(cred.scopes)

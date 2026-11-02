@@ -22,10 +22,20 @@ import {
   writeGuestMachineIdFile,
 } from '../identity/workstation-fingerprint.mjs'
 import { assignComputerFingerprint } from '../identity/slot-computer.mjs'
+import {
+  accountBoundElsewhereError,
+  findSlotHoldingAccount,
+  newDeviceId,
+  previousSlotAccount,
+  rotatedFingerprint,
+  sameAccount,
+  writeSlotUserId,
+} from '../identity/slot-device-identity.mjs'
+import { flattenOauthIdentity } from '../oauth/oauth-identity.mjs'
 import { VM_ORIGIN, canBindProxyToVm, normalizeOwnerId } from '../admin/resource-owner.mjs'
 import { readCodexAccounts, writeCodexAccounts } from './codex-slot.mjs'
 import { hasBoundExit, isLocalEgressProxy } from './egress.mjs'
-import { OS_CATALOG, STANDARD_LOCALE, nextNumericIndex, padVm, parseVmIndex } from './vm-runtime.mjs'
+import { OS_CATALOG, STANDARD_LOCALE, nextNumericIndex, officialCcUidGid, padVm, parseVmIndex } from './vm-runtime.mjs'
 import { parseSocks5Fields } from './proxy-pool.mjs'
 import { seedFreshCliHome } from './vm-recreate.mjs'
 import { atomicWriteJson, isValidVmId } from './vm-file.mjs'
@@ -540,7 +550,12 @@ async function attachProxy(projectRoot, id, spec, proxyPool, ownerUserId) {
   if (!ensured.ok) return fail(ensured.error || 'invalid_proxy', 'SOCKS5 无法写入')
   const bound = proxyPool.bind(ensured.proxy.id, id)
   if (!bound.ok) {
-    const message = bound.error === 'proxy_bind_limit' ? 'SOCKS5 绑定数量已满' : '绑定 SOCKS5 失败'
+    const message =
+      bound.error === 'proxy_bind_limit'
+        ? 'SOCKS5 绑定数量已满'
+        : bound.error === 'proxy_exit_ip_shared'
+          ? `出口 IP ${bound.exit_ip} 已被其他虚拟机使用`
+          : '绑定 SOCKS5 失败'
     return fail(bound.error || 'proxy_bind_failed', message)
   }
   bindVmProxy(projectRoot, id, proxyPool.getProxyByIdWithAuth(ensured.proxy.id))
@@ -587,6 +602,7 @@ export async function commitVmPackage({
   owner = { role: 'admin', userId: null },
   proxyPool,
   occupied = [],
+  allowSharedAccount = false,
 }) {
   if (!parsed?.ok)
     return { ok: false, status: 400, error: parsed?.error || { code: 'invalid_package', message: '包无效' } }
@@ -606,6 +622,12 @@ export async function commitVmPackage({
   const file = path.join(projectRoot, 'vms', `${id}.json`)
   if (!create && !fs.existsSync(file)) {
     return { ok: false, status: 404, error: { code: 'vm_not_found', message: 'VM not found' } }
+  }
+  const incomingAccount = !spec.codex && spec.credential?.oauth ? flattenOauthIdentity(spec.credential.oauth) : null
+  if (incomingAccount && !allowSharedAccount) {
+    // Exporting a slot and importing it as a new one would put the account on two computers.
+    const holder = findSlotHoldingAccount(projectRoot, incomingAccount, { exceptId: create ? null : id })
+    if (holder) return { ok: false, status: 409, error: accountBoundElsewhereError(holder) }
   }
 
   let status = 'stopped'
@@ -664,12 +686,29 @@ export async function commitVmPackage({
     }
     status = vm.status || 'stopped'
   }
+  let rotateUserId = null
+  if (!create && incomingAccount) {
+    const home = path.join(projectRoot, 'vms', id, 'cli-home')
+    if (sameAccount(incomingAccount, previousSlotAccount(vm, home)) === false) {
+      // A different account written onto this slot is a new user of the computer.
+      rotateUserId = newDeviceId()
+      vm.fingerprint = rotatedFingerprint(vm.fingerprint, { deviceId: rotateUserId })
+    }
+  }
   if (!proxyBindAllowed(spec, vm, owner.role, proxyPool)) {
     return { ok: false, status: 403, error: { code: 'proxy_forbidden', message: '无权绑定这个出口' } }
   }
   applyTraits(vm, spec)
   applySchedule(vm, spec, false)
   atomicWriteJson(file, vm, { mode: 0o600 })
+  if (rotateUserId) {
+    try {
+      writeSlotUserId(path.join(projectRoot, 'vms', id, 'cli-home'), rotateUserId, {
+        reset: true,
+        ...officialCcUidGid(id),
+      })
+    } catch {}
+  }
   if (create) {
     try {
       writeGuestMachineIdFile(projectRoot, id, vm.fingerprint?.guest_machine_id)

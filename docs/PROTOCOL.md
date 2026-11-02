@@ -156,9 +156,12 @@ native CLI `2.1.296` 保留带 billing 的 wire system（含官方 CLI / 子代�
 
 选槽之后：
 
-- `device_id`：64 hex 原样出站（创建生成值或官方 `machineID`）。遗留 UUID 槽仍 sha256。官方初装成功后存储值被 `~/.claude.json` `machineID` 覆盖
+- `device_id`：槽内 CLI 的安装 `userID`（`CLAUDE_CONFIG_DIR=/home/kincli/.claude`，即 `cli-home/.claude/.claude.json`）。CLI 自己的请求和 1P 事件都用这个值，`metadata.user_id` 与它一致；`fingerprint.device_id` 跟随它。本机槽首次启动前把创建时生成的 64 hex 预写成 `userID`，所以从第一个请求起就是同一个值。旧版 `machineID` 只在没有 `userID` 时兜底；home 级 `~/.claude.json` 是旧初装残留，不作为来源。遗留 UUID 槽仍 sha256。
+- 换账号：导入的账号与该槽上一个账号（槽记录、清除凭证时记下的 `departed_account`、CLI 的 `oauthAccount`）确定不同时，本机槽换新 `device_id` / `session_id`，重写 `.claude.json`（只留引导状态，丢 `oauthAccount`、项目历史），并重启槽内运行时；计算机（主机名 / machine-id / MAC）和出口不变。账号身份未知时不轮换。节点槽的 CLI 目录不在控制面，不轮换。
+- 同一账号（`account_uuid`，其次 email）已在别的 Claude 槽上时，导入 / 槽位包返回 `409 account_bound_elsewhere`；确需共享传 `allow_shared_account: true`。
+- 重置指纹同时把新 `device_id` 写进本机槽 CLI 的 `userID`，响应 `restart_required: true` 表示要重启槽才对运行中的 CLI 生效。
 - `session_id`：官方 CC 保留调用方原值；非官方用 CRS hash
-- `metadata.user_id`：官方 `userID` + 凭证 email（不读残留 `.claude/.claude.json`）
+- `metadata.user_id`：`device_id` 同上，`account_uuid` 只取槽位自己的账号（没有就为空串，不用调用方值），不含 email
 - guest locale / tz 进 fingerprint；`/etc/machine-id` 是 `guest_machine_id`（systemd 32 hex）。新槽主机名与 machine-id 来自私有 `kin-computer`，不再限定 `<distro>-<4hex>`；已有容器启动时保留原身份。本机新建容器发布计算机身份挂载，远端槽位仍使用原有身份传输路径。
 
 ## 相关头

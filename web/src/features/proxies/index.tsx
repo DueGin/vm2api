@@ -132,7 +132,7 @@ export function ProxiesPage() {
   const bindLimit = readPositive(
     tot,
     'bind_limit',
-    readPositive(cfg, 'bind_limit', 5)
+    readPositive(cfg, 'bind_limit', 1)
   )
   const probeMin = readPositive(cfg, 'probe_interval_min', 10)
   const total = Number(tot.total ?? list.length)
