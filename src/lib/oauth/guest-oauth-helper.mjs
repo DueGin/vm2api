@@ -66,7 +66,13 @@ export async function prepareSlotOAuth({
   if (!path.posix.isAbsolute(configDir) || configDir === '/') {
     throw fail('oauth_config_invalid', 'Target VM credential HOME is unavailable')
   }
-  return { exec, host, configDir, home: path.posix.dirname(configDir) }
+  // The guest's egress is the slot runtime's own: kernel.json says how the CLI
+  // leaves. Linux slots sit on the transparent egress network and declare
+  // proxy_url ''. Dialing the bound SOCKS from inside that network is SOCKS over
+  // SOCKS: the egress forwards the dial to the same proxy, which drops it
+  // ("Socket closed"). An older kernel.json without the key keeps the bound URL.
+  const guestProxyUrl = Object.hasOwn(config, 'proxy_url') ? String(config.proxy_url || '') : undefined
+  return { exec, host, configDir, home: path.posix.dirname(configDir), guestProxyUrl }
 }
 
 /** Keep operation context in memory only, never in credentials or JSON responses. */
@@ -97,7 +103,7 @@ export async function runGuestOAuthAuthService(
   } = {},
 ) {
   const context = await prepare({ exec, projectRoot, routing, timeoutMs })
-  const { host, configDir, home } = context
+  const { host, configDir, home, guestProxyUrl } = context
   exec = context.exec
   // The approved Linux cutover must not change macOS non-telemetry behavior.
   // This is an explicit native-host path, never a Linux execution fallback.
@@ -146,14 +152,16 @@ export async function runGuestOAuthAuthService(
   await record('start')
   try {
     // Controller proxyUrl may point at a loopback SSH forwarder. Never pass it
-    // into a guest: select the VM's binding, including explicit local egress.
+    // into a guest: use the egress the slot runtime itself uses (kernel.json),
+    // falling back to the VM's binding, including explicit local egress.
+    const guestProxy = guestProxyUrl ?? (isLocalEgressProxy(exec.vm.proxy) ? '' : boundProxyUrl(exec.vm.proxy))
     const result = await runDocker(argv, {
       env: host.dockerEnv(),
       timeoutMs: Math.max(timeoutMs * 8, 45000),
       stdin:
         JSON.stringify({
           ...payload,
-          proxy_url: isLocalEgressProxy(exec.vm.proxy) ? '' : boundProxyUrl(exec.vm.proxy),
+          proxy_url: guestProxy,
         }) + '\n',
     })
     if (result?.timed_out) throw fail('oauth_auth_timeout', 'Target VM OAuth helper timed out')
