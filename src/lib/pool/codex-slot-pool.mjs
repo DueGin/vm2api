@@ -30,6 +30,8 @@ const HARD_UNAVAILABLE = new Set(['dead', 'error', 'disabled'])
 export function isCodexSlotReady(vm, now = Date.now()) {
   if (!vm || !isCodexVm(vm)) return false
   if (proxyBlockedReason(vm.proxy)) return false
+  // Same rule as Claude slots: no traffic while the exit's zone is unread.
+  if (vm.exit_timezone?.status === 'unknown') return false
   if (vm.schedulable === false && !isLeftoverQuotaScheduleOff(vm)) return false
   if (!vm.has_token) return false
   // An expired access token with no refresh token can never succeed: the

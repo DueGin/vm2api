@@ -480,6 +480,13 @@ Claude 槽测试走官方 CC 入站（`/v1/messages`）。GPT/Codex 槽测试走
 
 `PUT /proxies/config` 的 `follow_proxy_timezone`（默认 true）：绑定一条代理后，该槽采用出口节点的 IANA 时区（persona `# Environment`、指纹、容器 `TZ`）。操作者在创建时或 `PATCH /vms/:id` 手动指定过时区的槽不受影响。
 
+时区只来自出口或操作者，不再有默认值：
+
+- 每次按出口同步后，槽记录写入 `exit_timezone`（列表 / 详情也返回）：`aligned`（已按出口对齐）、`unknown`（出口地理没读到）、`pinned`（手动指定）、`unmanaged`（关闭了跟随）。`unknown` 的槽不参与调度，受限原因 `exit_timezone_unknown`（出口时区未知）；之后任何一次地理检测成功或手动指定时区都会解除。换绑代理时检测失败，槽也不会带着旧出口的时区接单。
+- 没有时区的槽拒绝新建容器 / 启动，返回 `slot_timezone_unknown`，不再回落到 UTC（本机 Docker / KVM）或 `America/Los_Angeles`（集群节点、macOS 原生）。已有容器照常启动。
+- `geo_refresh_min`（默认 60，0 关闭，最大 1440）：定时探测后重新读取已绑定、健康的代理行的出口地理。IP 或时区变化时，日志记 `proxy-exit-ip-changed`，绑定槽重新对齐时区并热写入 `kernel.json`；读取失败保留上次的位置。
+- `POST /proxies/geo`（批量检测）与单条 `POST /proxies/:id/geo` 一样，成功后同步绑定槽的时区。
+
 `PUT /proxies/config` 的 `dns_primary` 保持字符串（默认 `auto`）：远程 SOCKS5 透明出口优先使用的 DNS 上游，可选 `auto`、`https://1.1.1.1/dns-query`、`https://8.8.8.8/dns-query`、`8.8.8.8:53`、`1.1.1.1:53`，或自定义 HTTPS DoH URL（如 `https://cloudflare-dns.com/dns-query`、`https://[2606:4700:4700::1111]/dns-query`）。URL 可包含路径、查询参数和 1–65535 的显式端口，主机须为有效域名或 IP literal；不允许 userinfo、fragment、空白、反斜杠或原始逗号（上游链用逗号分隔，参数中的逗号须编码为 `%2C`）。非法值返回 `invalid_dns_primary`，不改动原设置。所选上游排第一，其余内置上游按默认顺序排在其后作为自动 fallback；自定义 URL 后依次为 `https://1.1.1.1/dns-query`、`https://8.8.8.8/dns-query`、`8.8.8.8:53`、`1.1.1.1:53`，`auto` 直接用 kin-egress 内置顺序。DoH 经 SOCKS5 出口访问，域名由 SOCKS5 代理解析；`IP:53` 为经 SOCKS 转发的 DNS-over-TCP，出口到 DNS 服务器之间明文。变更后重载本机已绑定的 `kin-egress`（先 SIGTERM 等待旧进程退出并释放监听端口，超时后 SIGKILL，再启动新进程；启动失败时 `egress` 数组报告错误），不重建槽位；集群节点出口在下次槽位启动 / 重载时读取新设置。本地直连出口不使用此设置。
 
 `PUT /proxies/config` 的 `dns_disable_svcb_https` 为布尔值（默认 `false`），Web「代理 → 管理」显示「关闭 DNS type 64 / 65」开关。开启后向 SOCKS5 透明出口下发 DNS 覆写参数 `dns_empty_types: [64, 65]`：SVCB（64）和 HTTPS（65）查询返回 `NOERROR` 空答案，不访问上游；A、AAAA 等其它查询正常转发。关闭后移除覆写参数，恢复正常查询。非布尔值返回 `invalid_dns_disable_svcb_https`。保存后重载本机已绑定出口，`egress` 数组报告结果；集群出口在下次槽位启动 / 重载时生效，本地直连出口不使用此设置。

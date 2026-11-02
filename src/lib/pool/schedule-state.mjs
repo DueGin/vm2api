@@ -63,6 +63,7 @@ const RESTRICTED_SLOT = [
     text: '代理异常',
   },
   { match: /^node_offline$/, text: '节点离线' },
+  { match: /^exit_timezone_unknown$/, text: '出口时区未知' },
   { match: /^kernel_faulted$/, text: '内核故障' },
   { match: /^worker_unhealthy$/, text: '槽服务异常' },
   { match: /^maintenance$/, text: '维护中' },

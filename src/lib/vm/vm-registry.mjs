@@ -143,6 +143,7 @@ export function summarizeVm(vm, projectRoot = null, routing = null) {
     active_hours: activeHoursOf(vm),
     timezone: vm.timezone || null,
     timezone_source: vm.timezone_source || 'auto',
+    exit_timezone: vm.exit_timezone || null,
     locale: vm.locale || null,
     proxy: vm.proxy ? { ...vm.proxy, password: vm.proxy.password ? '***' : (vm.proxy.password ?? null) } : null,
     claude_code_version: vm.claude_code_version || null,
@@ -815,6 +816,9 @@ export function persistVmTimezone(projectRoot, id, timezone, { source = 'manual'
   vm.timezone_source = source
   if (vm.fingerprint && typeof vm.fingerprint === 'object') vm.fingerprint.timezone = zone
   vm.updated_at = new Date().toISOString()
+  // A hand-set zone is the operator's call; it lifts an exit_timezone_unknown hold.
+  // proxy_geo writes record their own verdict in proxy-timezone.mjs.
+  if (source === 'manual') vm.exit_timezone = { status: 'pinned', timezone: zone, checked_at: vm.updated_at }
   atomicWriteJson(file, vm)
   return summarizeVm(vm)
 }

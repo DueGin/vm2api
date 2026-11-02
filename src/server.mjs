@@ -67,6 +67,7 @@ import { makeError, ErrorType, ErrorCode } from './lib/core/errors.mjs'
 import { HOLD_PROXY } from './lib/pool/schedule-state.mjs'
 import * as panel from './lib/admin/panel-api.mjs'
 import { ProxyPool } from './lib/vm/proxy-pool.mjs'
+import { followExitGeoChanges } from './lib/vm/slot-timezone-follow.mjs'
 import { ensureProxyEgress, proxyEgressReady } from './lib/vm/egress.mjs'
 import { syncIpv6ProxyEgress } from './lib/vm/proxy-policy-runtime.mjs'
 import { GATEWAY_CAPABILITIES } from './lib/vm/execution-context.mjs'
@@ -380,6 +381,13 @@ try {
 } catch (err) {
   console.warn('[bootstrap] slot-guest-bin refresh failed:', err?.message || err)
 }
+// A bound exit that moved (new IP / zone) carries its slots' zone with it.
+followExitGeoChanges({
+  projectRoot: cfg.paths.project,
+  proxyPool,
+  getRouting: () => routingConfig,
+  log: console,
+})
 proxyPool.startScheduler()
 
 // 首次安装的出口池是空的，槽没有可绑出口就起不来。本机出口永远成立，先补上。

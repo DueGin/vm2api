@@ -4272,6 +4272,9 @@ export function createPanelHandler(ctx) {
           vm.timezone_source = 'proxy_geo'
           if (vm.fingerprint && typeof vm.fingerprint === 'object') vm.fingerprint.timezone = zoned.timezone
         }
+        // Keep the exit-timezone verdict the sync just recorded through the rewrite below.
+        const recordedExitTz = getVm(cfg.paths.project, id)?.exit_timezone
+        if (recordedExitTz) vm.exit_timezone = recordedExitTz
         if (body.activate === true) {
           try {
             activateVmSlot(id)
@@ -5669,7 +5672,21 @@ export function createPanelHandler(ctx) {
           onlyEnabled: body?.only_enabled !== false,
           force: body?.force === true,
         })
-        return json(res, 200, panel.ok(result))
+        // Same as the single-row lookup: bound slots adopt (or are cleared to) the learned zone.
+        const bound = new Map(proxyPool.snapshot().proxies.map((row) => [row.id, row.bound_vm_ids || []]))
+        const timezones = []
+        for (const row of result.results || []) {
+          if (!row.ok) continue
+          for (const vmId of bound.get(row.id) || []) {
+            const synced = await syncVmTimezoneFromProxy(cfg.paths.project, proxyPool, vmId, {
+              proxyId: row.id,
+              detect: false,
+            })
+            if (synced.applied) projectSlotKernelConfig({ id: vmId })
+            timezones.push({ vm_id: vmId, applied: synced.applied, timezone: synced.timezone, reason: synced.reason })
+          }
+        }
+        return json(res, 200, panel.ok({ ...result, timezones }))
       }
       if (req.method === 'POST' && p === '/api/panel/proxies/probe') {
         const result = await proxyPool.probeAll({ onlyEnabled: true })
@@ -5845,6 +5862,7 @@ export function createPanelHandler(ctx) {
             proxyId: id,
             detect: false,
           })
+          if (synced.applied) projectSlotKernelConfig({ id: vmId })
           timezones.push({ vm_id: vmId, applied: synced.applied, timezone: synced.timezone, reason: synced.reason })
         }
         return json(res, 200, panel.ok({ ...result, timezones }))

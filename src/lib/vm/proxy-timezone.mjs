@@ -9,7 +9,48 @@
 import { validTimezone } from '../core/timezone.mjs'
 import { isLocalEgressProxy, localEgressIdForNode } from './egress.mjs'
 import { slotHost } from './slot-host.mjs'
-import { getVm, persistVmTimezone } from './vm-registry.mjs'
+import { getVm, patchVmRecord, persistVmTimezone } from './vm-registry.mjs'
+
+/**
+ * `vm.exit_timezone` records whether the slot's zone matches its current exit:
+ *   aligned   zone follows the exit's detected location
+ *   unknown   the exit's location could not be read; the slot stays out of the
+ *             pool (evaluateSlotGate) rather than answer with a zone the exit IP
+ *             contradicts
+ *   pinned    the operator set the zone by hand
+ *   unmanaged follow_proxy_timezone is off
+ */
+export const EXIT_TIMEZONE_UNKNOWN = 'exit_timezone_unknown'
+
+/** Not a failure to read the exit: the operator decided the zone. */
+const OPERATOR_REASONS = Object.freeze({
+  timezone_pinned: 'pinned',
+  follow_proxy_timezone_disabled: 'unmanaged',
+})
+
+/** No slot to record on. */
+const NO_SLOT_REASONS = new Set(['vm_id_required', 'vm_not_found'])
+
+export function recordExitTimezone(projectRoot, vmId, record) {
+  return patchVmRecord(projectRoot, vmId, (vm) => {
+    vm.exit_timezone = { ...record, checked_at: new Date().toISOString() }
+    return vm
+  })
+}
+
+function recordSyncResult(projectRoot, vmId, proxyId, result) {
+  if (NO_SLOT_REASONS.has(result.reason)) return
+  if (result.ok) {
+    recordExitTimezone(projectRoot, vmId, { status: 'aligned', timezone: result.timezone, proxy_id: proxyId || null })
+    return
+  }
+  const operator = OPERATOR_REASONS[result.reason]
+  if (operator) {
+    recordExitTimezone(projectRoot, vmId, { status: operator, proxy_id: proxyId || null })
+    return
+  }
+  recordExitTimezone(projectRoot, vmId, { status: 'unknown', reason: result.reason, proxy_id: proxyId || null })
+}
 
 /**
  * @param {object} opts
@@ -23,6 +64,15 @@ export async function syncVmTimezoneFromProxy(
   vmId,
   { force = false, detect = true, proxyId = null, persist = true } = {},
 ) {
+  const result = await resolveVmTimezoneFromProxy(projectRoot, proxyPool, vmId, { force, detect, proxyId, persist })
+  if (persist) {
+    const bound = proxyId || getVm(projectRoot, String(vmId || '').trim())?.proxy?.id || null
+    recordSyncResult(projectRoot, String(vmId || '').trim(), bound, result)
+  }
+  return result
+}
+
+async function resolveVmTimezoneFromProxy(projectRoot, proxyPool, vmId, { force, detect, proxyId, persist }) {
   const id = String(vmId || '').trim()
   if (!id || !proxyPool) return skip('vm_id_required')
   if (!force && !proxyPool.followProxyTimezoneEnabled()) return skip('follow_proxy_timezone_disabled')

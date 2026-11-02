@@ -49,6 +49,9 @@ const DEFAULT_CONFIG = {
   // Bind a proxy -> the slot adopts that exit node's timezone unless the
   // operator pinned one by hand (vm.timezone_source === 'manual').
   follow_proxy_timezone: true,
+  // Re-read the exit location of bound rows this often (minutes, 0 = off).
+  // A rotating exit that moves keeps its first location forever otherwise.
+  geo_refresh_min: 60,
   bind_limit: MAX_VMS_PER_PROXY,
   // Transparent-egress DNS tried first; the other built-ins remain as fallback.
   dns_primary: DNS_PRIMARY_AUTO,
@@ -981,6 +984,12 @@ export class ProxyPool extends EventEmitter {
     if (patch.geo_timeout_ms != null) {
       this.state.config.geo_timeout_ms = Math.max(1000, Number(patch.geo_timeout_ms) || 8000)
     }
+    if (patch.geo_refresh_min != null) {
+      const n = Number(patch.geo_refresh_min)
+      if (!Number.isInteger(n) || n < 0 || n > 1440)
+        return { ok: false, error: 'invalid_geo_refresh_min', min: 0, max: 1440 }
+      this.state.config.geo_refresh_min = n
+    }
     if (patch.follow_proxy_timezone != null) {
       this.state.config.follow_proxy_timezone = !!patch.follow_proxy_timezone
     }
@@ -1415,11 +1424,51 @@ export class ProxyPool extends EventEmitter {
     if (!this.state.config.enabled) return
     const min = this.state.config.probe_interval_min || 10
     const ms = min * 60 * 1000
-    void this.probeAll({ onlyEnabled: true }).catch(() => {})
-    this._timer = setInterval(() => {
-      this.probeAll({ onlyEnabled: true }).catch(() => {})
-    }, ms)
+    const tick = () =>
+      this.probeAll({ onlyEnabled: true })
+        .then(() => this.refreshBoundGeo())
+        .catch(() => {})
+    void tick()
+    this._timer = setInterval(tick, ms)
     this._timer.unref?.()
+  }
+
+  /**
+   * Re-read the exit location of every bound, healthy row whose last check is
+   * older than `geo_refresh_min`. A changed IP or zone emits `geo-change` so the
+   * bound slots can follow (server.mjs). A failed lookup keeps the last known
+   * location: a transient miss is not a move.
+   */
+  async refreshBoundGeo({ now = Date.now() } = {}) {
+    const minutes = Number(this.state.config?.geo_refresh_min ?? 60)
+    if (!Number.isFinite(minutes) || minutes <= 0) return { ok: true, refreshed: 0, changes: [] }
+    if (this._geoRefreshing) return { ok: false, error: 'geo_refresh_in_progress' }
+    this._geoRefreshing = true
+    const changes = []
+    let refreshed = 0
+    try {
+      const due = this.state.proxies.filter((p) => {
+        if (!p.enabled || p.status === 'dead' || p.status === 'fail') return false
+        if (proxyBlockedReason(p, this.state.config.ipv6_enabled)) return false
+        if (!boundVmIdsOf(p).length) return false
+        const checked = Date.parse(p.geo_checked_at || '')
+        return !Number.isFinite(checked) || now - checked >= minutes * 60_000
+      })
+      for (const p of due) {
+        const before = { ip: proxyExitIp(p), timezone: validTimezone(p.geo_timezone) }
+        const result = await this.detectGeo(p.id, { force: true })
+        refreshed += 1
+        if (!result?.ok) continue
+        const after = { ip: proxyExitIp(p), timezone: validTimezone(p.geo_timezone) }
+        if (before.ip === after.ip && before.timezone === after.timezone) continue
+        const change = { proxy_id: p.id, from: before, to: after, bound_vm_ids: boundVmIdsOf(p) }
+        changes.push(change)
+        this.emit('geo-change', change)
+      }
+      return { ok: true, refreshed, changes }
+    } finally {
+      this._geoRefreshing = false
+    }
   }
 
   stopScheduler() {

@@ -9,6 +9,7 @@
 - 代理 `bind_limit` 默认 1（已保存的配置保留原值），解析到同一出口 IP 的多行共用上限（`proxy_exit_ip_shared`）。
 - worker 代发的 refresh / usage / profile / count_tokens 改用槽内 cli-node 的 TLS（Bun / BoringSSL ClientHello，HTTP/1.1），不再模拟 Chrome；请求头、头顺序、UA（refresh / profile `axios/1.15.0`，usage `claude-code/<版本>`）、refresh body 的 `scope` 与字段顺序按 cli-node 2.1.303 抓包对齐。count_tokens 走 `?beta=true` 并带 SDK 头。控制面 bootstrap 头同样对齐；本地出口直连时强制 IPv4。
 - 控制面镜像（amd64）改为从源码编译 `kin-worker`，与 ARM64 镜像一致。
+- 槽位时区只来自出口或手动指定：出口地理没读到时记 `exit_timezone.status=unknown`，该槽不参与调度（受限 · 出口时区未知），检测成功或手动指定后解除；换绑代理时检测失败不再带着旧出口的时区接单。没有时区的槽拒绝新建容器 / 启动（`slot_timezone_unknown`），不再回落 UTC（本机）或 `America/Los_Angeles`（集群节点 / macOS 原生）。新增 `proxy_pool_config.geo_refresh_min`（默认 60 分钟）定时重读已绑出口的地理，出口 IP / 时区变化时绑定槽跟随并热写 `kernel.json`；批量地理检测也会同步绑定槽。
 
 已部署机升级：须从源码重建控制面镜像（含源码编译的 `kin-worker`）后重启。本机槽经 `slot-guest-bin` 暂存目录拿到新 `kin-worker`，无需重启槽；集群节点槽的 `kin-worker` 烘焙在槽镜像里，需走一次舰队更新。已有 `bind_limit` 不变，如需一出口一账号请在「代理池」改为 1。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
 

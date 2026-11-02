@@ -66,6 +66,16 @@ export function kernelForIndex(i) {
   return OS_ORDER[(Number(i) - 1) % OS_ORDER.length]
 }
 
+/** Refusal for a slot whose zone has not been read from its exit nor set by hand. */
+export function slotTimezoneUnknown(vm) {
+  const reason = vm?.exit_timezone?.reason ? `（${vm.exit_timezone.reason}）` : ''
+  return {
+    ok: false,
+    code: 'slot_timezone_unknown',
+    error: `槽位时区未知${reason}：出口地理位置还没检测成功。请在代理池检测该出口的地理位置，或在槽位设置里手动指定时区后再启动。`,
+  }
+}
+
 export function timezoneForIndex(i) {
   return US_TIMEZONES[(Number(i) - 1) % US_TIMEZONES.length]
 }
@@ -1066,6 +1076,9 @@ export async function startVmRuntime(vm, projectRoot, { recreate = false, routin
   if (!shouldPublishComputer(existing)) {
     return { ok: false, error: 'refusing to publish a new computer onto an existing container' }
   }
+  // TZ is baked into the container here. Without a zone read from the exit (or
+  // set by hand) it would come up on UTC, which the exit IP contradicts.
+  if (!zone) return slotTimezoneUnknown(vm)
   let computer
   try {
     computer = ensureSlotComputer(projectRoot, vm)

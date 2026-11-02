@@ -40,11 +40,12 @@ import {
   containerName,
   displayName,
   kvmBindChownArgv,
-  normalizeTimezone,
   KVM_CAPS,
+  slotTimezoneUnknown,
   STANDARD_LOCALE,
   writeWorkerFiles,
 } from '../vm/vm-runtime.mjs'
+import { validTimezone } from '../core/timezone.mjs'
 import {
   containerAction,
   createContainerRaw,
@@ -992,7 +993,10 @@ async function prepare(vm, projectRoot, routing) {
     return { fail: { ok: false, code: 'remote_unsupported', error: 'crag 数据面暂不支持集群节点' } }
   }
   vm.kernel = vm.kernel && OS_CATALOG[vm.kernel] ? vm.kernel : 'ubuntu-24.04'
-  vm.timezone = normalizeTimezone(vm.timezone)
+  // No default zone: America/Los_Angeles on a Tokyo exit is a contradiction the upstream can see.
+  const zone = validTimezone(vm.timezone)
+  if (!zone) return { fail: slotTimezoneUnknown(vm) }
+  vm.timezone = zone
   vm.locale = vm.locale || STANDARD_LOCALE
   const nodeId = vmNodeId(vm)
   const session = await nodeSession(nodeId)
