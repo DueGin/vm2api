@@ -49,9 +49,9 @@ import {
   containerName,
   displayName,
   kvmBindChownArgv,
-  normalizeTimezone,
   resolveSlotRouting,
   KVM_CAPS,
+  slotTimezoneUnknown,
   STANDARD_LOCALE,
   writeWorkerFiles,
 } from '../vm/vm-runtime.mjs'
@@ -59,6 +59,7 @@ import { projectCragUniversalVm, readCragClusterSubscription } from '../vm/crag-
 import { withCragRuntimeAdmission } from '../vm/slot-runtime-admission.mjs'
 import { publishKvmCragLicense } from '../vm/kvm-crag-license.mjs'
 import { patchVmRecord } from '../vm/vm-registry.mjs'
+import { validTimezone } from '../core/timezone.mjs'
 import {
   containerAction,
   createContainerRaw,
@@ -1075,7 +1076,10 @@ export async function refreshClusterSlotPayloads(
 
 async function prepare(vm, projectRoot, routing, { pinnedImageId = null } = {}) {
   vm.kernel = vm.kernel && OS_CATALOG[vm.kernel] ? vm.kernel : 'ubuntu-24.04'
-  vm.timezone = normalizeTimezone(vm.timezone)
+  // No default zone: America/Los_Angeles on a Tokyo exit is a contradiction the upstream can see.
+  const zone = validTimezone(vm.timezone)
+  if (!zone) return { fail: slotTimezoneUnknown(vm) }
+  vm.timezone = zone
   vm.locale = vm.locale || STANDARD_LOCALE
   const nodeId = vmNodeId(vm)
   const session = await nodeSession(nodeId)

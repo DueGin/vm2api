@@ -28,7 +28,8 @@ import { isLocalEgressProxy } from '../vm/egress.mjs'
 import { isKvmRuntime, runtimeKind } from '../vm/runtime-kind.mjs'
 import { resolveKernelDataplane } from '../vm/slot-engine.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
-import { displayName, normalizeTimezone, STANDARD_LOCALE, writeWorkerFiles } from '../vm/vm-runtime.mjs'
+import { displayName, slotTimezoneUnknown, STANDARD_LOCALE, writeWorkerFiles } from '../vm/vm-runtime.mjs'
+import { validTimezone } from '../core/timezone.mjs'
 import { describeNativePayload, ensureNativePayload, remoteNativePayloadDir } from './native-payload.mjs'
 import { clusterManager, nodeSession, placementProjectRoot, remoteSlotDir, vmNodeId } from './placement.mjs'
 import { openSftp, readRemoteFileNoFollow, runRemote, shellQuote, writeRemoteFile } from './remote-fs.mjs'
@@ -339,7 +340,10 @@ function applyNativeRuntime(vm, { nodeId, session, p, digest, domain, relays, sl
 async function configureSlot(vm, projectRoot, routing) {
   const blocked = nativeUnsupported(vm, routing)
   if (blocked) return { fail: blocked }
-  vm.timezone = normalizeTimezone(vm.timezone)
+  // No default zone: the slot's zone must come from its exit or the operator.
+  const zone = validTimezone(vm.timezone)
+  if (!zone) return { fail: slotTimezoneUnknown(vm) }
+  vm.timezone = zone
   vm.locale = vm.locale || STANDARD_LOCALE
   const nodeId = vmNodeId(vm)
   const session = await nativeSession(vm)

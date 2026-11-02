@@ -105,6 +105,9 @@ export function evaluateSlotGate(vm) {
   if (isCodexVm(vm)) return { ok: false, reason: 'codex_vm' }
   const blocked = proxyBlockedReason(vm?.proxy)
   if (blocked) return { ok: false, reason: blocked }
+  // A zone the exit IP contradicts is a fingerprint; until the exit's location
+  // is read the slot takes no traffic (see proxy-timezone.mjs).
+  if (vm?.exit_timezone?.status === 'unknown') return { ok: false, reason: 'exit_timezone_unknown' }
   const oauthProjection = /^oauth_/.test(String(vm?.schedule_disabled_reason || ''))
   if (!isVmScheduleReady(vm, { allowMissingCredential: oauthProjection })) {
     if (!oauthProjection) return { ok: false, reason: 'vm_unschedulable' }
