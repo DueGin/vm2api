@@ -21,16 +21,24 @@ import net from 'node:net'
 import { validTimezone } from '../core/timezone.mjs'
 
 export const DEFAULT_GEO_ENDPOINT =
-  'http://ip-api.com/json/?fields=status,message,query,country,countryCode,regionName,city,timezone,isp'
+  'http://ip-api.com/json/?fields=status,message,query,country,countryCode,regionName,city,timezone,isp,as'
 export const DEFAULT_GEO_TIMEOUT_MS = 8000
 /** Hostname resolves to AAAA only; unreachable over an IPv4-only exit. */
 export const DEFAULT_GEO_V6_IP_ENDPOINT = 'https://ipv6.icanhazip.com'
 export const DEFAULT_GEO_V6_LOOKUP_ENDPOINT =
-  'http://ip-api.com/json/{ip}?fields=status,message,query,country,countryCode,regionName,city,timezone,isp'
+  'http://ip-api.com/json/{ip}?fields=status,message,query,country,countryCode,regionName,city,timezone,isp,as'
 
 function text(value) {
   const s = String(value ?? '').trim()
   return s || null
+}
+
+/** AS number of a geo payload: `AS2914 …`, a bare `2914`, or ipinfo's `org` prefix. */
+function asnOf(payload) {
+  const raw = text(payload.as || payload.asn || payload.org)
+  if (!raw) return null
+  const m = /^(?:AS)?(\d{1,10})\b/i.exec(raw)
+  return m ? `AS${m[1]}` : null
 }
 
 /** Split an `ipapi.co` style `America/New_York` or ipinfo `loc` payload into our shape. */
@@ -48,6 +56,9 @@ export function normalizeGeoPayload(payload) {
     region: text(payload.regionName || payload.region || payload.region_name),
     city: text(payload.city),
     isp: text(payload.isp || payload.org || payload.asn),
+    // ip-api spells the network `as` ("AS2914 NTT America, Inc."); providers that
+    // only send a bare number still give a usable key.
+    asn: asnOf(payload),
     timezone: timezone || null,
   }
   if (!geo.ip && !geo.country && !geo.timezone) return null

@@ -2,6 +2,7 @@ import { applyBetaPolicyToHeader, shouldPassContext1mByPolicy } from '../protoco
 import { CONTEXT_1M_BETA, hasClaudeCode1mSuffix } from '../protocol/context-1m.mjs'
 import { OFFICIAL_CLAUDE_CLI_UA, OFFICIAL_STAINLESS } from './vm-identity.mjs'
 import { isOfficialClaudeUa } from './official-claude-ua.mjs'
+import { filterBetasForSlotCli } from '../protocol/claude-code-betas.mjs'
 
 export { isOfficialClaudeUa, isUnofficialClaudeEntrypointUa, CLAUDE_CLI_UA_RE } from './official-claude-ua.mjs'
 
@@ -238,9 +239,12 @@ export function loadStoredHeaders(homeDir) {
   return Object.keys(cleaned).length ? cleaned : null
 }
 
-function applyReplayBetaPolicy(headers, model = '', isOfficial = false, want1m = false) {
+function applyReplayBetaPolicy(headers, model = '', isOfficial = false, want1m = false, slotCliBetas = false) {
   if (!headers || typeof headers !== 'object') return headers
-  const beta = headers['anthropic-beta'] || ''
+  let beta = headers['anthropic-beta'] || ''
+  // Official passthrough keeps a caller's beta set verbatim, but the outbound UA is pinned to
+  // the slot CLI version. A newer caller build's own tokens would pair with the older UA.
+  if (isOfficial && slotCliBetas) beta = filterBetasForSlotCli(beta)
   const optIn1m = want1m === true || hasClaudeCode1mSuffix(model)
   let cleaned
   try {
@@ -300,7 +304,7 @@ export function resolveVmCharacteristicHeaders(identity = {}, reqHeaders = {}, h
       ...device,
       ...conditionalHeaders(incoming),
     }
-    return applyReplayBetaPolicy(base, model, true, want1m)
+    return applyReplayBetaPolicy(base, model, true, want1m, true)
   }
   // Unofficial: ignore inbound protocol / UA. Stored CLI betas fill gaps; VM fingerprint wins.
   const base = {

@@ -1266,11 +1266,6 @@ export async function runOfficialCcBootstrap(rawOpts = {}) {
       }
     }
     const fingerprint = reconcileFingerprint !== false ? persistOfficialCcFingerprint(vmPath, homeDir) : null
-    if (typeof collectIdentity === 'function') {
-      try {
-        await collectIdentity(projectRoot, JSON.parse(fs.readFileSync(vmPath, 'utf8')))
-      } catch {}
-    }
     writeOfficialCcStatus(homeDir, {
       status: 'running',
       vm_id: vmId,
@@ -1383,6 +1378,14 @@ export async function runOfficialCcBootstrap(rawOpts = {}) {
   } finally {
     if (!(keepResident && helloOk)) {
       const restored = restoreSlotMemoryAfterOfficialCc(vmId, idleMemory, { vm })
+      // The probe reads the cgroup limit for memory_bytes. Collected above, it would
+      // record this bootstrap's temporary `memory` cap instead of the slot's real idle
+      // quota, so a 1g slot would report 500 MiB forever. Collect after the restore.
+      if (restored.ok !== false && typeof collectIdentity === 'function') {
+        try {
+          await collectIdentity(projectRoot, JSON.parse(fs.readFileSync(vmPath, 'utf8')))
+        } catch {}
+      }
       try {
         const prev = readOfficialCcStatus(homeDir) || {}
         writeOfficialCcStatus(homeDir, {

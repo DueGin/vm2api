@@ -16,6 +16,7 @@ import {
   ensureMimicryBetas,
   ensureOauthBeta,
   withRequestProtocolBetas,
+  filterBetasForSlotCli,
 } from '../../src/lib/protocol/claude-code-betas.mjs'
 
 test('defaultOfficialBetaHeader keeps the short header on legacy haiku only', () => {
@@ -180,4 +181,28 @@ test('credit replay arms its beta only for an official bounded token', () => {
   }
   assert.deepEqual(withRequestProtocolBetas([creditBeta], { fallback_credit_token: 'credit' }), [creditBeta])
   assert.deepEqual(withRequestProtocolBetas([], {}), [])
+})
+
+test('filterBetasForSlotCli drops tokens a pinned 2.1.303 slot CLI cannot send', () => {
+  const caller = [
+    BETA_CLAUDE_CODE,
+    BETA_INTERLEAVED,
+    BETA_CONTEXT_MANAGEMENT,
+    'per-turn-control-2026-07-01',
+    'mid-conversation-tool-changes-2026-07-01',
+    'inline-tools-2026-09-15',
+    'advisor-tool-2026-03-01',
+    'thinking-token-count-2026-05-13',
+    'advanced-tool-use-2025-11-20',
+    'effort-2025-11-24',
+  ].join(',')
+  const kept = filterBetasForSlotCli(caller).split(',')
+  assert.ok(!kept.includes('inline-tools-2026-09-15'))
+  assert.ok(!kept.includes('advisor-tool-2026-03-01'))
+  assert.equal(kept.length, 8)
+  assert.equal(kept[0], BETA_CLAUDE_CODE)
+  assert.equal(filterBetasForSlotCli(''), '')
+  assert.equal(filterBetasForSlotCli(undefined), '')
+  // Order and dedupe are the caller's; the filter only removes.
+  assert.equal(filterBetasForSlotCli(`${BETA_OAUTH},${BETA_OAUTH}`), `${BETA_OAUTH},${BETA_OAUTH}`)
 })

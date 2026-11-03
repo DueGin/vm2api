@@ -1486,6 +1486,28 @@ test('refreshOfficialSystemEnvironment keeps caller env and only rewrites timezo
   assert.equal(refreshed.system[4].text, first.system[4].text)
 })
 
+test('refreshOfficialSystemEnvironment rewrites Locale without dropping the Timezone on the same line', () => {
+  const first = applyCrsUnofficialPersona(
+    {
+      model: 'claude-sonnet-5',
+      system: '# Environment\n - Primary working directory: /tmp/demo\n',
+      messages: [{ role: 'user', content: 'hi' }],
+    },
+    { officialClient: false, mode: 'overwrite', identity: { timezone: 'America/New_York', locale: 'en_US.UTF-8' } },
+  )
+  const idx = first.system.findIndex((block) => String(block.text).includes('# Environment'))
+  assert.ok(idx >= 0)
+  // Overwrite packs OS Version / Locale / Timezone on one line.
+  assert.match(first.system[idx].text, / - Locale: en_US\.UTF-8 - Timezone: America\/New_York/)
+  const refreshed = refreshOfficialSystemEnvironment(
+    first,
+    { timezone: 'Europe/London', locale: 'en_GB.UTF-8' },
+    'claude-sonnet-5',
+  )
+  assert.match(refreshed.system[idx].text, / - Locale: en_GB\.UTF-8 - Timezone: Europe\/London/)
+  assert.ok(!refreshed.system[idx].text.includes('America/New_York'))
+})
+
 test('Environment inherits caller git/shell and Windows cwd', () => {
   const out = applyCrsUnofficialPersona(
     {

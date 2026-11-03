@@ -56,8 +56,8 @@ func TestStorePreservesUnknownFieldsAndRotatesGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("credential mode = %o, want 600", info.Mode().Perm())
+	if info.Mode().Perm() != 0o444 {
+		t.Fatalf("credential mode = %o, want 444 (sealed against the slot CLI)", info.Mode().Perm())
 	}
 }
 

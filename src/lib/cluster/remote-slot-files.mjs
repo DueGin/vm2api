@@ -60,7 +60,8 @@ export function remoteSlotPath(rel) {
 }
 
 const prepared = new WeakMap()
-const REMOTE_FILE_MODE = 0o600
+/** Node slots seal `credentials.json` too: the slot CLI must not rewrite the shared RT. */
+const REMOTE_FILE_MODE = 0o444
 
 async function prepareRemoteDir(session, vm) {
   let done = prepared.get(session.client)
@@ -174,7 +175,7 @@ export async function pullSlotCredentials(vm, slotDir, session = null) {
   )
   if (!remote) return { pulled: false, reason: 'remote_missing' }
   const local = path.join(slotDir, CREDENTIALS)
-  let mode = 0o600
+  let mode = REMOTE_FILE_MODE
   let same = false
   try {
     same = fs.readFileSync(local).equals(remote)

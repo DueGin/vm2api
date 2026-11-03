@@ -49,7 +49,12 @@ const GID = String(process.env.KIN_VM_GID || 987)
 const UID_BASE = Number(process.env.KIN_VM_UID_BASE || 10000)
 const KVM_MEMORY_OVERHEAD_MIB = 512
 const NET = process.env.KIN_VM_NETWORK || 'bridge'
-const PUBLIC_IP = process.env.PUBLIC_HOST || '166.88.96.199'
+/**
+ * The gateway's own address, only used when the runtime really is host-networked.
+ * A Docker slot has no host IP of its own: its exit is the bound proxy, and
+ * writing one box's address into every slot record is a stale third party's IP.
+ */
+const PUBLIC_IP = process.env.PUBLIC_HOST || ''
 const MODULE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 // Root in the runner must write into the slot-uid 0700 dirs and drop qemu to the slot uid.
 export const KVM_CAPS = ['SETUID', 'SETGID', 'SETPCAP', 'CHOWN', 'FOWNER', 'DAC_OVERRIDE']
@@ -173,7 +178,7 @@ function parseInspectStdout(name, stdout) {
     running: running === 'true' && !crashLooping,
     restarting: crashLooping,
     pid: Number(pid) || 0,
-    ip: networkMode === 'host' ? PUBLIC_IP : null,
+    ip: networkMode === 'host' ? PUBLIC_IP || null : null,
     networkMode: networkMode || null,
     startedAt: startedAt || null,
     image: image || null,
@@ -326,7 +331,7 @@ export function runtimePatch(vm, info, extra = {}) {
     container: info?.name || containerName(vm.id),
     pid: info?.pid || null,
     stopped: info?.running !== true,
-    ip: info?.ip || PUBLIC_IP,
+    ip: info?.ip || null,
     network: NET,
     network_mode: info?.networkMode || NET,
     started_at: info?.startedAt || rest.started_at || null,

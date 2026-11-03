@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 修复 overwrite 档刷新 Environment 时丢时区：该档把 `OS Version / Locale / Timezone` 写在同一行，`applySlotLocale` 的正则匹配到行尾，换 Locale 会把后面的 ` - Timezone: …` 一并吞掉。`applySlotLocale` / `applySlotTimezone` 现在只替换到同行下一个 ` - 字段:` 为止。
+- 官方流量透传的 `anthropic-beta` 按槽位 CLI 版本过滤：调用方 2.1.317 的 `inline-tools-2026-09-15`、`advisor-tool-2026-03-01` 等新 build 才有的 token 过去会原样发出，配着 UA 里的 `claude-cli/2.1.303`，这个组合官方 CLI 不会产生。新增 `SLOT_CLI_BETAS` / `filterBetasForSlotCli()`（`claude-code-betas.mjs`），只删不增，顺序与去重仍归调用方；字段对应的 body 仍由 `withRequestProtocolBetas` 重新补齐。
+- 槽位 `credentials.json` 一律以 0444 收尾：worker 刷新（Go `atomicWrite`，先写临时文件再 rename，0444 不挡写入）、`ensureSlotSubscriptionType`、集群节点 push/pull 都统一封写，避免槽内常驻 CLI 自己刷新共享 RT 把 `kinGeneration` 冲掉。原先只有 `writeWorkerCredentialFile` 会封，刷新一次就回落到 0600。
+- `vm.runtime.ip` 不再回落写死的 `166.88.96.199`：那是第三方机房地址，Docker 槽的出口是绑定代理，`ip` 现在只有宿主机网络运行时才写 `PUBLIC_HOST`，否则留空。
+- 面板建槽的 `bind_limit` 兜底不再写死 5，改用 `MAX_VMS_PER_PROXY`（1）。
+- 代理地理检测补采 ASN（ip-api `as` 字段，兼容 `asn` / ipinfo `org`），绑定时同一 AS 下已有别的槽会在结果里返回 `same_asn_vm_ids` 警告，但不拦截绑定：只有出口 IP 本身才做 1:1 限制。
+- 槽位面板返回 `hardware_profile_shared_with`：闭源 `kin-computer` 的 DMI 档案是 vm-id 的纯函数，两个槽可能落在同一机型上，只能报告不能重抽。
+- 官方 CC 初始化改为在恢复空闲内存**之后**采集 guest 身份：原先在 bootstrap 把容器压到 `memory_init`（500m）期间采集，`memory_bytes` 记成 500 MiB 并被后续合并永久保留。
 - #836：`ensureSlotGuestBinDir` 原子替换失败时清理 `${dest}.${pid}.tmp` 暂存文件，避免 `data/run/slot-guest-bin` 下残留堆积。
 - 新建槽位铸造唯一计算机身份：machine-id / 主机名 / MAC / SMBIOS UUID 不再随 vm-id 固定，多套部署的同号槽不再是同一台电脑；主机名不再出现 DMI 占位串；`vms/<id>/machine-id` 落后于记录时重写。
 - 设备 ID 统一：槽位 `device_id` 跟随槽内 CLI 的安装 `userID`（`CLAUDE_CONFIG_DIR` 下的 `.claude.json`），本机槽首次启动前预写；重置指纹同时改 `userID`（`restart_required`）。旧 `machineID`、home 级残留 `~/.claude.json` 不再作为来源。

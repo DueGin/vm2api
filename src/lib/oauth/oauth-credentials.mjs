@@ -513,6 +513,7 @@ export function ensureSlotSubscriptionType(homeDir, accountTier = null) {
   // hint may itself be a default, so it must not downgrade an existing plan.
   if (present && !(present === 'pro' && identified === 'max')) {
     chownSlotCredentialFile(homeDir, file)
+    sealSlotCredentialFile(file)
     return { wrote: false, reason: 'present' }
   }
 
@@ -523,6 +524,7 @@ export function ensureSlotSubscriptionType(homeDir, accountTier = null) {
   } catch {}
   atomicWriteJson(file, doc, { mode: 0o600 })
   chownSlotCredentialFile(homeDir, file)
+  sealSlotCredentialFile(file)
   return { wrote: true, subscriptionType: tier }
 }
 

@@ -466,3 +466,26 @@ test('official agent ids pass through and are not stored', () => {
   assert.equal(unofficial['x-claude-code-parent-agent-id'], undefined)
   fs.rmSync(dir, { recursive: true, force: true })
 })
+
+test('official passthrough drops betas newer than the pinned slot CLI', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-cc-desk-'))
+  const identity = {
+    userAgent: 'claude-cli/2.1.303 (external, cli)',
+    fingerprint: { x_app: 'cli', stainless_os: 'Linux' },
+  }
+  const h = resolveCrsHeaders(
+    {
+      'user-agent': 'claude-cli/2.1.317 (external, sdk-cli)',
+      'anthropic-beta':
+        'claude-code-20250219,inline-tools-2026-09-15,advisor-tool-2026-03-01,context-management-2025-06-27',
+    },
+    dir,
+    identity,
+    'claude-opus-5-5',
+  )
+  const beta = String(h['anthropic-beta'] || '')
+  assert.doesNotMatch(beta, /inline-tools-2026-09-15|advisor-tool-2026-03-01/)
+  assert.match(beta, /claude-code-20250219/)
+  assert.match(beta, /context-management-2025-06-27/)
+  fs.rmSync(dir, { recursive: true, force: true })
+})

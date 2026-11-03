@@ -423,3 +423,36 @@ test('local egress probe stays direct when kin-egress is down', async () => {
   assert.equal(row.enabled, true)
   assert.equal(disabled.length, 0)
 })
+
+test('a same-ASN exit is reported as a warning, never refused', () => {
+  const pool = makePool()
+  pool.importLines('10.0.0.21:1080\n10.0.0.22:1080\n10.0.0.23:1080')
+  const [a, b, c] = pool.snapshot().proxies.map((p) => p.id)
+  for (const p of pool.state.proxies) p.status = 'ok'
+  const rowA = pool.state.proxies.find((p) => p.id === a)
+  const rowB = pool.state.proxies.find((p) => p.id === b)
+  const rowC = pool.state.proxies.find((p) => p.id === c)
+  // One provider, two addresses in different /24s: the exit-IP check cannot see it.
+  Object.assign(rowA, { geo_ip: '216.151.254.119', geo_asn: 'AS2914' })
+  Object.assign(rowB, { geo_ip: '128.241.18.56', geo_asn: 'AS2914' })
+  Object.assign(rowC, { geo_ip: '198.51.100.9', geo_asn: 'AS7029' })
+
+  const first = pool.bind(a, 'vm-01')
+  assert.equal(first.ok, true)
+  assert.equal(first.same_asn_vm_ids, undefined)
+
+  const second = pool.bind(b, 'vm-02')
+  assert.equal(second.ok, true, 'the bind still succeeds')
+  assert.deepEqual(second.same_asn_vm_ids, ['vm-01'])
+  assert.equal(second.asn, 'AS2914')
+  assert.equal(pool.getProxyForVm('vm-02')?.id, b)
+
+  const third = pool.bind(c, 'vm-03')
+  assert.equal(third.ok, true)
+  assert.equal(third.same_asn_vm_ids, undefined)
+
+  // No ASN yet: nothing to compare, and no false warning.
+  rowC.geo_asn = null
+  pool.stopScheduler()
+  assert.equal(pool.vmsOnSameAsn(rowC).length, 0)
+})

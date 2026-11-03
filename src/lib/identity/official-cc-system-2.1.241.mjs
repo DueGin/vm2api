@@ -199,11 +199,22 @@ export function extractInboundEnvironmentSection(texts = []) {
   return ''
 }
 
+const ENV_FIELD_NAMES = 'Locale|Timezone|Platform|Shell|OS Version|Language'
+
+/**
+ * `Name: value`, where the value stops at the next ` - Field:` on the same line.
+ * The overwrite section packs `OS Version: … - Locale: … - Timezone: …` on one
+ * line; matching to end of line made a Locale rewrite drop the Timezone after it.
+ */
+function envFieldRe(name) {
+  return new RegExp(`(\\b${name}:[ \\t]*)[^\\n]*?(?=[ \\t]+-[ \\t]+(?:${ENV_FIELD_NAMES}):|\\n|$)`, 'i')
+}
+
 export function applySlotTimezone(text, timezone) {
   const src = String(text || '')
   const tz = sanitizeEnvToken(timezone, 64) || 'UTC'
-  if (/\bTimezone:\s*/i.test(src)) {
-    return src.replace(/\bTimezone:\s*[^\n]*/i, `Timezone: ${tz}`)
+  if (envFieldRe('Timezone').test(src)) {
+    return src.replace(envFieldRe('Timezone'), (_m, head) => `${head}${tz}`)
   }
   if (/^# Environment\b/m.test(src)) {
     return src.replace(/^(# Environment[^\n]*\n)/m, `$1 - Timezone: ${tz}\n`)
@@ -276,7 +287,7 @@ export function applySlotLocale(text, locale) {
   const src = String(text || '')
   const loc = sanitizeEnvToken(locale, 64)
   if (!loc) return src
-  if (/\bLocale:\s*/i.test(src)) return src.replace(/\bLocale:\s*[^\n]*/i, `Locale: ${loc}`)
+  if (envFieldRe('Locale').test(src)) return src.replace(envFieldRe('Locale'), (_m, head) => `${head}${loc}`)
   return src
 }
 

@@ -131,6 +131,7 @@ export function proxyGeoOf(proxy) {
     region: proxy.geo_region || null,
     city: proxy.geo_city || null,
     isp: proxy.geo_isp || null,
+    asn: proxy.geo_asn || null,
     timezone: proxy.geo_timezone || null,
     checked_at: proxy.geo_checked_at || null,
     error: proxy.geo_error || null,
@@ -415,6 +416,22 @@ export class ProxyPool extends EventEmitter {
 
   bindLimit() {
     return clampBindLimit(this.state.config?.bind_limit, MAX_VMS_PER_PROXY)
+  }
+
+  /**
+   * Bound slots whose exit sits in the same AS as this row. Two residential exits
+   * from one provider are still one operator's block; that is a warning for the
+   * panel, not a refusal, because only the exact exit IP is provably 1:1.
+   */
+  vmsOnSameAsn(p, vmId = null) {
+    const asn = String(p?.geo_asn || '').trim()
+    if (!asn) return []
+    const ids = new Set()
+    for (const x of this.state.proxies) {
+      if (x !== p && String(x.geo_asn || '').trim() !== asn) continue
+      for (const id of boundVmIdsOf(x)) if (id !== vmId) ids.add(id)
+    }
+    return [...ids]
   }
 
   /**
@@ -804,6 +821,7 @@ export class ProxyPool extends EventEmitter {
     const blocked = proxyBlockedReason(p, this.state.config.ipv6_enabled)
     if (blocked) return { ok: false, error: blocked }
     if (!vm) return { ok: false, error: 'vm_id_required' }
+    let sameAsn = []
     if (!force && !boundVmIdsOf(p).includes(vm)) {
       // Checked before the slot leaves its current row, so a refusal changes nothing.
       const limit = this.bindLimit()
@@ -811,6 +829,8 @@ export class ProxyPool extends EventEmitter {
       if (sharing.length >= limit && proxyExitIp(p)) {
         return { ok: false, error: 'proxy_exit_ip_shared', max: limit, exit_ip: proxyExitIp(p), bound_vm_ids: sharing }
       }
+      // A sibling on the same AS is a warning only: the bind goes through, the panel shows it.
+      sameAsn = this.vmsOnSameAsn(p, vm)
     }
     for (const x of this.state.proxies) {
       if (x.id === proxyId) continue
@@ -822,9 +842,10 @@ export class ProxyPool extends EventEmitter {
         )
     }
     const ids = boundVmIdsOf(p)
+    const warning = sameAsn.length ? { same_asn_vm_ids: sameAsn, asn: p.geo_asn || null } : {}
     if (ids.includes(vm)) {
       this.save()
-      return { ok: true, proxy: this.publicProxy(p) }
+      return { ok: true, proxy: this.publicProxy(p), ...warning }
     }
     const limit = this.bindLimit()
     if (!force && ids.length >= limit) {
@@ -832,7 +853,7 @@ export class ProxyPool extends EventEmitter {
     }
     setBoundVmIds(p, [...ids, vm])
     this.save()
-    return { ok: true, proxy: this.publicProxy(p) }
+    return { ok: true, proxy: this.publicProxy(p), ...warning }
   }
 
   unbind(proxyId, vmId = null) {
@@ -1323,6 +1344,7 @@ export class ProxyPool extends EventEmitter {
     p.geo_region = geo.region || null
     p.geo_city = geo.city || null
     p.geo_isp = geo.isp || null
+    p.geo_asn = geo.asn || null
     p.geo_timezone = validTimezone(geo.timezone) || null
   }
 

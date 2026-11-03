@@ -297,6 +297,14 @@ func (s *Store) WithLock(ctx context.Context, fn func() error) error {
 	return fn()
 }
 
+// credentialSealMode strips the write bits. Writes still work because every
+// writer creates a temp file and renames over the target; only directory
+// permission is needed for that.
+func credentialSealMode(mode os.FileMode) os.FileMode {
+	// Same 0444 the Node writers seal with, so a refresh on any node leaves one mode.
+	return mode&0o444 | 0o444
+}
+
 func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -331,7 +339,10 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 		_ = os.Remove(tempPath)
 		return fmt.Errorf("replace credential file: %w", err)
 	}
-	if err = os.Chmod(path, mode); err != nil {
+	// The slot CLI must never rewrite the shared refresh token: a second one drops
+	// kinGeneration and burns the account. Read-only after the rename covers the
+	// resident CLI, which would otherwise open the 0600 inode for write.
+	if err = os.Chmod(path, credentialSealMode(mode)); err != nil {
 		return fmt.Errorf("chmod credential file: %w", err)
 	}
 	if directory, openErr := os.Open(dir); openErr == nil {

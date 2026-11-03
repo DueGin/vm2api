@@ -90,6 +90,7 @@ import {
   validatePersonaTemplate,
 } from '../identity/persona-template.mjs'
 import { PERSONA_STANDING_MAX } from '../identity/crs-persona.mjs'
+import { fingerprintDir, readPublishedProfile } from '../identity/slot-computer.mjs'
 import { MESSAGES_BREAKPOINT_MODES } from '../protocol/cache-ttl.mjs'
 import { normalizeCodexRouting, normalizeInferenceWebsocket } from '../protocol/codex-route.mjs'
 import { effectiveOpenAIPolicy, normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
@@ -1518,12 +1519,14 @@ export async function snapshotAccountPool({
   } catch {
     liveById = null
   }
+  const duplicateProfiles = duplicateProfileMap(cfg.paths.project, listed)
   const vms = listed.map((v) =>
     enrichVm(v, accountQuota, active, {
       routingConfig,
       pool,
       poolSnap,
       liveById,
+      duplicateProfiles,
       projectRoot: cfg.paths.project,
     }),
   )
@@ -1767,6 +1770,28 @@ function mergeVmProxy(v, poolSnap, { role = 'admin', nodes = [] } = {}) {
     proxy_configured: true,
     can_import_credential: canImportCredential(v, hit),
   }
+}
+
+/**
+ * vm id -> ids of the other slots the closed kin-computer gave the same DMI
+ * profile. Read once per snapshot; a missing or unreadable directory is "unknown".
+ */
+export function duplicateProfileMap(projectRoot, vms = []) {
+  const byProfile = new Map()
+  for (const vm of vms || []) {
+    const id = String(vm?.id || '')
+    if (!id) continue
+    const profile = readPublishedProfile(fingerprintDir(projectRoot, id))?.source_profile
+    if (!profile) continue
+    if (!byProfile.has(profile)) byProfile.set(profile, [])
+    byProfile.get(profile).push(id)
+  }
+  const out = {}
+  for (const ids of byProfile.values()) {
+    if (ids.length < 2) continue
+    for (const id of ids) out[id] = ids.filter((other) => other !== id).sort()
+  }
+  return out
 }
 
 function enrichVm(v, accountQuota, active, extras = {}) {
@@ -2110,6 +2135,9 @@ function enrichVm(v, accountQuota, active, extras = {}) {
       : (u5 != null && gateZone(u5, safety, quotaGate) !== GATE_OPEN) ||
         (u7 != null && gateZone(u7, weeklySafety, quotaGate) !== GATE_OPEN),
     fingerprint: v.fingerprint || null,
+    // The closed kin-computer derives the DMI profile from vm-id alone; two slots can land
+    // on one model. Reported, not repaired: only the binary can pick a different one.
+    hardware_profile_shared_with: extras.duplicateProfiles?.[v.id] || [],
     physical_features: publicPhysicalFeatures(v),
     runtime: v.runtime || null,
     ip: v.ip || v.runtime?.ip || null,

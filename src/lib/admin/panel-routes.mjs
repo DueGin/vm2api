@@ -229,6 +229,7 @@ import { RUNTIME_KVM } from '../vm/runtime-kind.mjs'
 import { hostProxyUrlForVm, slotHost } from '../vm/slot-host.mjs'
 import { syncIpv6ProxyEgress } from '../vm/proxy-policy-runtime.mjs'
 import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
+import { MAX_VMS_PER_PROXY } from '../vm/proxy-pool.mjs'
 import { writeSlotSeedFiles } from '../vm/slot-seed.mjs'
 import {
   egressEnabled,
@@ -4084,7 +4085,12 @@ export function createPanelHandler(ctx) {
             })
           }
           const used = Array.isArray(row.bound_vm_ids) ? row.bound_vm_ids.length : 0
-          if (!row.enabled || row.status === 'dead' || row.blocked_reason || used >= (row.bind_limit || 5)) {
+          if (
+            !row.enabled ||
+            row.status === 'dead' ||
+            row.blocked_reason ||
+            used >= (row.bind_limit || MAX_VMS_PER_PROXY)
+          ) {
             return json(res, 409, {
               ok: false,
               error: { code: 'proxy_unavailable', message: '所选出口已失效或已绑满' },
