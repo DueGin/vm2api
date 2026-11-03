@@ -7,8 +7,8 @@
 - 槽位 `credentials.json` 一律以 0444 收尾：worker 刷新（Go `atomicWrite`，先写临时文件再 rename，0444 不挡写入）、`ensureSlotSubscriptionType`、集群节点 push/pull 都统一封写，避免槽内常驻 CLI 自己刷新共享 RT 把 `kinGeneration` 冲掉。原先只有 `writeWorkerCredentialFile` 会封，刷新一次就回落到 0600。
 - `vm.runtime.ip` 不再回落写死的 `166.88.96.199`：那是第三方机房地址，Docker 槽的出口是绑定代理，`ip` 现在只有宿主机网络运行时才写 `PUBLIC_HOST`，否则留空。
 - 面板建槽的 `bind_limit` 兜底不再写死 5，改用 `MAX_VMS_PER_PROXY`（1）。
-- 代理地理检测补采 ASN（ip-api `as` 字段，兼容 `asn` / ipinfo `org`），绑定时同一 AS 下已有别的槽会在结果里返回 `same_asn_vm_ids` 警告，但不拦截绑定：只有出口 IP 本身才做 1:1 限制。
-- 槽位面板返回 `hardware_profile_shared_with`：闭源 `kin-computer` 的 DMI 档案是 vm-id 的纯函数，两个槽可能落在同一机型上，只能报告不能重抽。
+- 代理地理检测补采 ASN（ip-api `as` 字段，兼容 `asn` / ipinfo `org`），存进新列 `proxies.geo_asn`（迁移 `900_fork_proxy_geo_asn`：fork 专用编号，避开上游的顺序号，否则上游下一个 `048_*` 会在启动时报校验和不符）。`geo_isp` 保持原样，它会进 native telemetry。绑定时同一 AS 下已有别的槽会在结果里返回 `same_asn_vm_ids` 警告，但不拦截绑定：只有出口 IP 本身才做 1:1 限制。
+- 槽位列表 / 详情（`/api/panel/vms`）返回 `hardware_profile_shared_with`：闭源 `kin-computer` 的 DMI 档案是 vm-id 的纯函数，两个槽可能落在同一机型上，只能报告不能重抽。只对管理员给出其他槽的 id。
 - 官方 CC 初始化改为在恢复空闲内存**之后**采集 guest 身份：原先在 bootstrap 把容器压到 `memory_init`（500m）期间采集，`memory_bytes` 记成 500 MiB 并被后续合并永久保留。
 - #836：`ensureSlotGuestBinDir` 原子替换失败时清理 `${dest}.${pid}.tmp` 暂存文件，避免 `data/run/slot-guest-bin` 下残留堆积。
 - 新建槽位铸造唯一计算机身份：machine-id / 主机名 / MAC / SMBIOS UUID 不再随 vm-id 固定，多套部署的同号槽不再是同一台电脑；主机名不再出现 DMI 占位串；`vms/<id>/machine-id` 落后于记录时重写。

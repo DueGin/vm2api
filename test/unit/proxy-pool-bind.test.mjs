@@ -456,3 +456,23 @@ test('a same-ASN exit is reported as a warning, never refused', () => {
   pool.stopScheduler()
   assert.equal(pool.vmsOnSameAsn(rowC).length, 0)
 })
+
+test('geo_asn survives a reopen of the pool', (t) => {
+  const dir = tmpDir()
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const pool = new ProxyPool({ dataDir: dir })
+  pool.stopScheduler()
+  pool.importLines('10.0.0.31:1080')
+  const row = pool.state.proxies[0]
+  pool._applyGeoResult(row, {
+    ok: true,
+    geo: { ip: '212.111.221.6', isp: 'URAN', asn: 'AS7029', timezone: 'America/New_York' },
+  })
+  pool.save()
+  const reopened = new ProxyPool({ dataDir: dir })
+  reopened.stopScheduler()
+  const back = reopened.state.proxies[0]
+  assert.equal(back.geo_asn, 'AS7029')
+  // ISP text is mirrored into native telemetry; it keeps its own plain value.
+  assert.equal(back.geo_isp, 'URAN')
+})

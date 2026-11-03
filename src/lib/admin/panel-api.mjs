@@ -640,12 +640,14 @@ export async function buildDashboard({
   const poolSnap = snapshotPool(proxyPool)
   const listed = listVms(cfg.paths.project, routingConfig)
   const liveById = await collectLivePanelCredentials(cfg.paths.project, listed)
+  const duplicateProfiles = duplicateProfileMap(cfg.paths.project, listed)
   const vms = listed.map((v) =>
     enrichVm(v, accountQuota, active, {
       routingConfig,
       pool,
       poolSnap,
       liveById,
+      duplicateProfiles,
       projectRoot: cfg.paths.project,
       clusterNodes,
       role: 'admin',
@@ -768,14 +770,18 @@ export async function buildVmList({
   const active = getActiveVmId(cfg.paths.project)
   const pool = poolScheduler?.snapshot?.() || {}
   const poolSnap = snapshotPool(proxyPool)
-  const listed = filterVmsForPanel(listVms(cfg.paths.project, routingConfig), { role, userId: ownerUserId })
+  const all = listVms(cfg.paths.project, routingConfig)
+  const listed = filterVmsForPanel(all, { role, userId: ownerUserId })
   const liveById = await collectLivePanelCredentials(cfg.paths.project, listed)
+  // Compared across every slot on the box, but only the admin sees other slots' ids.
+  const duplicateProfiles = role === 'admin' ? duplicateProfileMap(cfg.paths.project, all) : {}
   const vms = listed.map((v) =>
     enrichVm(v, accountQuota, active, {
       routingConfig,
       pool,
       poolSnap,
       liveById,
+      duplicateProfiles,
       projectRoot: cfg.paths.project,
       clusterNodes,
       role,
@@ -839,11 +845,14 @@ export async function buildVmDetail({
   const poolSnap = snapshotPool(proxyPool)
   const listed = [summarizeVm(vm, cfg.paths.project, routingConfig)]
   const liveById = await collectLivePanelCredentials(cfg.paths.project, listed, { cacheMs: 0 })
+  const duplicateProfiles =
+    role === 'admin' ? duplicateProfileMap(cfg.paths.project, listVms(cfg.paths.project, routingConfig)) : {}
   const summary = enrichVm(listed[0], accountQuota, active, {
     routingConfig,
     pool,
     poolSnap,
     liveById,
+    duplicateProfiles,
     projectRoot: cfg.paths.project,
     clusterNodes,
     role,
