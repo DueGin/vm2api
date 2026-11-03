@@ -71,6 +71,7 @@ export function remoteSlotPath(rel) {
 
 const prepared = new WeakMap()
 const REMOTE_FILE_MODE = 0o600
+const CREDENTIAL_FILE_MODE = 0o444
 
 async function prepareRemoteDir(session, vm) {
   let done = prepared.get(session.client)
@@ -361,7 +362,7 @@ export async function pushSlotCredentials(vm, slotDir, session = null) {
   const sftp = await openSftp(s.client)
   const remote = remoteSlotDir(s.host, vm.id)
   await writeRemoteFile(sftp, `${remote}/${remoteSlotPath(CREDENTIALS)}`, fs.readFileSync(local), {
-    mode: REMOTE_FILE_MODE,
+    mode: CREDENTIAL_FILE_MODE,
     owner: ownerFor(s, vm),
   })
   // Official CLI reads ~/.claude/.credentials.json; one store, same as local slots.

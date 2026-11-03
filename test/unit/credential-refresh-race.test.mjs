@@ -7,6 +7,7 @@ import {
   PROACTIVE_REFRESH_SKEW_MS,
   REFRESH_SKEW_MS,
   ensureOfficialCredentialLink,
+  ensureSlotSubscriptionType,
 } from '../../src/lib/oauth/oauth-credentials.mjs'
 import {
   createCredentialRefreshMonitor,
@@ -19,7 +20,7 @@ function slotHome(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cred-race-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const home = path.join(root, 'vms', 'cf-test', 'cli-home')
-  fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true, mode: 0o700 })
   return home
 }
 
@@ -38,17 +39,35 @@ test('scheduled refresh is due before the in-slot CLI 5-minute window', () => {
   assert.equal(needsScheduledRefresh({ ...slot(60_000), refresh_error: 'invalid_grant' }, now), false)
 })
 
-test('rotation adopts the later grant the CLI wrote over a broken alias, then relinks', (t) => {
+test('rotation adopts the later grant over a sealed credential, then relinks', (t) => {
   const home = slotHome(t)
   const worker = path.join(home, '.claude', 'credentials.json')
   const official = path.join(home, '.claude', '.credentials.json')
   fs.writeFileSync(worker, grant('rt-old', 1000, { accountUuid: 'acct-1' }))
+  fs.chmodSync(worker, 0o444)
+  const priorInode = fs.statSync(worker).ino
   fs.writeFileSync(official, grant('rt-new', 2000, { accountUuid: 'acct-1' }))
   const r = ensureOfficialCredentialLink(home, { adoptOfficial: 'rotation' })
   assert.equal(r.linked, true)
   assert.equal(r.adopted, true)
   assert.equal(fs.readlinkSync(official), 'credentials.json')
   assert.equal(readGrant(worker).refreshToken, 'rt-new')
+  assert.notEqual(fs.statSync(worker).ino, priorInode)
+  assert.equal(fs.statSync(worker).mode & 0o777, 0o444)
+})
+
+test('subscription updates seal credentials only inside private directories', (t) => {
+  const home = slotHome(t)
+  const dir = path.join(home, '.claude')
+  const worker = path.join(dir, 'credentials.json')
+  fs.writeFileSync(worker, grant('rt-1', 1000), { mode: 0o600 })
+  assert.equal(ensureSlotSubscriptionType(home, 'pro').wrote, true)
+  assert.equal(fs.statSync(worker).mode & 0o777, 0o444)
+
+  fs.chmodSync(dir, 0o755)
+  assert.equal(ensureSlotSubscriptionType(home, 'pro').reason, 'present')
+  assert.equal(fs.statSync(worker).mode & 0o777, 0o600)
+  assert.equal(readGrant(worker).refreshToken, 'rt-1')
 })
 
 test('rotation keeps the worker grant when the CLI copy is older or the same', (t) => {

@@ -12,7 +12,11 @@ import (
 )
 
 func TestStorePreservesUnknownFieldsAndRotatesGeneration(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "credentials.json")
+	dir := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "credentials.json")
 	seed := map[string]any{
 		"unknownTop": "keep",
 		"claudeAiOauth": map[string]any{
@@ -51,6 +55,24 @@ func TestStorePreservesUnknownFieldsAndRotatesGeneration(t *testing.T) {
 	oauth := decoded["claudeAiOauth"].(map[string]any)
 	if oauth["unknownOAuth"] != "keep-too" {
 		t.Fatalf("unknown OAuth field was lost: %#v", oauth)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o444 {
+		t.Fatalf("credential mode = %o, want 444 (sealed against the slot CLI)", info.Mode().Perm())
+	}
+}
+
+func TestAtomicWriteDoesNotWidenPermissionsInSharedDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "shared")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "credentials.json")
+	if err := atomicWrite(path, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
 	if err != nil {

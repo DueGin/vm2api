@@ -184,6 +184,49 @@ export function fullClaudeCodeMimicryBetas() {
   ]
 }
 
+/**
+ * Every beta token the pinned slot CLI can send on its own. A caller running a
+ * newer build passes its own beta set through untouched, so a token newer than
+ * the slot's CLI (e.g. 2.1.317's `inline-tools-2026-09-15`, `advisor-tool-2026-03-01`)
+ * goes out under a `claude-cli/2.1.303` UA — a pair no real CLI produces.
+ * Field-gated tokens are listed too: they are re-added from the body by
+ * `withRequestProtocolBetas` anyway, and dropping one here also drops the body
+ * field that needs it (`sanitizeAnthropicBodyForBetaTokens`).
+ */
+const SLOT_CLI_BETAS = new Map([
+  [
+    '2.1.303',
+    new Set([
+      ...fullClaudeCodeMimicryBetas(),
+      BETA_MID_CONVERSATION_SYSTEM,
+      BETA_MID_CONVERSATION_OUTPUT_CONFIG,
+      BETA_THINKING_DISPLAY_UPDATES,
+      BETA_DANGEROUS_TOOL_USE,
+      BETA_FALLBACK_CREDIT,
+      BETA_CONTEXT_1M,
+      'fast-mode-2026-02-01',
+      'structured-outputs-2025-12-15',
+      'task-budgets-2026-03-13',
+      'message-threads-2026-08-12',
+      'server-side-fallback-2026-07-01',
+      'server-side-fallback-2026-06-01',
+      'prompt-caching-evict-2026-05-12',
+    ]),
+  ],
+])
+
+/** Drop the tokens the slot's pinned CLI cannot send. Empty pieces are ignored. */
+export function filterBetasForSlotCli(header = '', version) {
+  const raw = String(header || '')
+  const allowed = SLOT_CLI_BETAS.get(version)
+  if (!allowed) return raw
+  return raw
+    .split(',')
+    .map((token) => token.trim())
+    .filter((token) => token && allowed.has(token))
+    .join(',')
+}
+
 export const DEFAULT_BETA_HEADER = fullClaudeCodeMimicryBetas().join(',')
 
 function isLegacyHaiku(modelId = '') {

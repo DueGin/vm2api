@@ -468,15 +468,21 @@ test('start reconcile seeds an empty node dir from the local credential', async 
   assert.equal(node.links.get(`${node.session.host.root}/vms/vm-07/claude/.credentials.json`), 'credentials.json')
 })
 
-test('explicit import replaces the node credential at 0600; identical pull is a no-op', async () => {
+test('explicit import seals only the node credential; identical pull preserves local mode', async () => {
   const node = fakeNode()
   node.files.set(node.remoteCred, Buffer.from('{"rt":"old-account"}'))
   const slotDir = localSlot('{"rt":"imported"}')
-  fs.chmodSync(path.join(slotDir, 'cli-home', '.claude', 'credentials.json'), 0o777)
+  const local = path.join(slotDir, 'cli-home', '.claude', 'credentials.json')
+  fs.chmodSync(local, 0o600)
+  fs.mkdirSync(path.join(slotDir, 'run'))
+  fs.writeFileSync(path.join(slotDir, 'run', 'internal.token'), 'fixture-token')
   await pushSlotCredentials(vm, slotDir, node.session)
+  await pushSlotFiles(vm, slotDir, ['run'], node.session)
   assert.equal(node.files.get(node.remoteCred).toString(), '{"rt":"imported"}')
-  assert.equal(node.modes.get(node.remoteCred), 0o600, 'a 0777 local checkout must not leak its mode to the node')
+  assert.equal(node.modes.get(node.remoteCred), 0o444)
+  assert.equal(node.modes.get(`${node.session.host.root}/vms/${vm.id}/run/internal.token`), 0o600)
   assert.deepEqual(await pullSlotCredentials(vm, slotDir, node.session), { pulled: false, reason: 'same' })
+  assert.equal(fs.statSync(local).mode & 0o777, 0o600)
 })
 
 for (const identical of [false, true]) {

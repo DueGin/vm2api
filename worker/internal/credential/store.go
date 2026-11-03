@@ -302,6 +302,9 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create credential directory: %w", err)
 	}
+	if info, err := os.Lstat(dir); err == nil && info.IsDir() && info.Mode().Perm()&0o077 == 0 {
+		mode = 0o444
+	}
 	temp, err := os.CreateTemp(dir, ".credentials-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create credential temp file: %w", err)
@@ -330,9 +333,6 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err = os.Rename(tempPath, path); err != nil {
 		_ = os.Remove(tempPath)
 		return fmt.Errorf("replace credential file: %w", err)
-	}
-	if err = os.Chmod(path, mode); err != nil {
-		return fmt.Errorf("chmod credential file: %w", err)
 	}
 	if directory, openErr := os.Open(dir); openErr == nil {
 		_ = directory.Sync()

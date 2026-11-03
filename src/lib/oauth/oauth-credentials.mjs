@@ -149,6 +149,7 @@ function regularOauthGrant(file) {
     const oauth = doc?.claudeAiOauth && typeof doc.claudeAiOauth === 'object' ? doc.claudeAiOauth : doc
     if (!oauth || typeof oauth !== 'object') return null
     return {
+      doc,
       refresh: String(oauth.refreshToken || oauth.refresh_token || '').trim(),
       expires: Number(oauth.expiresAt || oauth.expires_at || 0) || 0,
       account: String(oauth.accountUuid || oauth.account_uuid || '').trim(),
@@ -192,29 +193,25 @@ export function ensureOfficialCredentialLink(homeDir, { uid, gid, create = false
   const officialFile = path.join(claudeDir, '.credentials.json')
   if (!homeDir) return { wrote: false, error: 'home missing' }
   const workerGrant = regularOauthGrant(workerFile)
+  const officialGrant = adoptOfficial ? regularOauthGrant(officialFile) : null
   const adopt =
     !!adoptOfficial &&
     (adoptOfficial !== 'rotation' || !!workerGrant?.refresh) &&
-    officialGrantWins(regularOauthGrant(officialFile), workerGrant)
-  if (!fs.existsSync(workerFile)) {
-    if (!adopt && !create) return { wrote: false, error: 'worker credentials.json missing' }
+    officialGrantWins(officialGrant, workerGrant)
+  const missing = !fs.existsSync(workerFile)
+  if (missing && !adopt && !create) return { wrote: false, error: 'worker credentials.json missing' }
+  if (missing || adopt) {
     fs.mkdirSync(claudeDir, { recursive: true, mode: 0o700 })
-    if (adopt) fs.copyFileSync(officialFile, workerFile)
-    else fs.writeFileSync(workerFile, '{}\n', { mode: 0o600 })
-    fs.chmodSync(workerFile, 0o600)
-    if (uid != null && gid != null) {
+    const currentOwner = !missing && (uid == null || gid == null) ? fs.lstatSync(workerFile) : null
+    const ownerUid = uid ?? currentOwner?.uid
+    const ownerGid = gid ?? currentOwner?.gid
+    atomicWriteJson(workerFile, adopt ? officialGrant.doc : '{}\n', { mode: 0o600 })
+    if (ownerUid != null && ownerGid != null) {
       try {
-        fs.chownSync(workerFile, uid, gid)
+        fs.chownSync(workerFile, ownerUid, ownerGid)
       } catch {}
     }
-  } else if (adopt) {
-    fs.copyFileSync(officialFile, workerFile)
-    fs.chmodSync(workerFile, 0o600)
-    if (uid != null && gid != null) {
-      try {
-        fs.chownSync(workerFile, uid, gid)
-      } catch {}
-    }
+    if (adopt) sealSlotCredentialFile(workerFile)
   }
   fs.mkdirSync(claudeDir, { recursive: true })
   try {
@@ -409,9 +406,9 @@ function chownSlotCredentialFile(homeDir, file) {
 
 function sealSlotCredentialFile(file) {
   if (!file) return
-  // Slot Claude must not rewrite the shared RT; that drops kinGeneration.
   try {
-    fs.chmodSync(file, 0o444)
+    const parent = fs.lstatSync(path.dirname(file))
+    fs.chmodSync(file, parent.isDirectory() && !(parent.mode & 0o077) ? 0o444 : 0o600)
   } catch {}
 }
 
@@ -523,16 +520,15 @@ export function ensureSlotSubscriptionType(homeDir, accountTier = null, { source
     !(authoritative && identified && present !== identified)
   ) {
     chownSlotCredentialFile(homeDir, file)
+    sealSlotCredentialFile(file)
     return { wrote: false, reason: 'present' }
   }
 
   const tier = identified || 'pro'
   oauth.subscriptionType = tier
-  try {
-    fs.chmodSync(file, 0o600)
-  } catch {}
   atomicWriteJson(file, doc, { mode: 0o600 })
   chownSlotCredentialFile(homeDir, file)
+  sealSlotCredentialFile(file)
   return { wrote: true, subscriptionType: tier }
 }
 

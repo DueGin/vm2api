@@ -106,6 +106,40 @@ function runChecked(argv, timeout) {
   }
 }
 
+/** The DMI profile the closed binary published for this directory, if any. */
+export function readPublishedProfile(dir) {
+  const pc = readJson(path.join(dir, 'pc_identity.json'))
+  if (!pc || typeof pc !== 'object') return null
+  return {
+    source_profile: typeof pc.source_profile === 'string' ? pc.source_profile : null,
+    identity_source: typeof pc.identity_source === 'string' ? pc.identity_source : null,
+  }
+}
+
+/**
+ * Other slots that the binary gave the same hardware profile. It is a pure
+ * function of vm-id inside a closed binary, so Node cannot re-roll it; the
+ * profiles can only be reported. Two slots with the same profile differ in
+ * hostname / machine-id / MAC but present the same model, CPU and DIMMs.
+ */
+export function duplicateProfileSlots(projectRoot, vmId) {
+  const own = readPublishedProfile(fingerprintDir(projectRoot, vmId))
+  if (!own?.source_profile) return []
+  const out = []
+  let entries = []
+  try {
+    entries = fs.readdirSync(path.join(projectRoot, 'vms'), { withFileTypes: true })
+  } catch {
+    return []
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === vmId) continue
+    const other = readPublishedProfile(fingerprintDir(projectRoot, entry.name))
+    if (other?.source_profile === own.source_profile) out.push(entry.name)
+  }
+  return out.sort()
+}
+
 function readJson(file) {
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'))

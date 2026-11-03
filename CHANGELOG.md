@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- 新建槽位铸造唯一计算机身份，主机名不使用 DMI 占位串；KVM 重建同时更新虚拟机记录与 QEMU 的 SMBIOS UUID。
+- 设备 ID 跟随槽内 CLI 的 `userID`；同账号重复导入其他槽位时默认返回 `409 account_bound_elsewhere`。
+- 新配置的代理 `bind_limit` 默认 1，解析到同一出口 IP 的多行共用上限；已保存的配置保留原值。同 ASN 的不同出口只告警、不拦截。
+- amd64 控制面镜像与 ARM64 一样从源码编译 `kin-worker`；Worker 的 refresh / usage / profile 改用 CLI 兼容的 HTTP/1.1 客户端和请求头。现有节点槽需更新槽镜像才能取得新 Worker。
+- 槽位时区来自出口地理或手动设置；未知时拒绝新建运行时并停止调度，支持定时刷新出口地理。修复 overwrite 档同一行替换 Locale 时误删 Timezone。
+- 官方透传只对有已知支持列表的 CLI 版本过滤 beta；没有列表时保留协议 token。
+- 私有目录里的槽位凭证保持只读，令牌采纳走原子替换；保持上游提前刷新和重链方案，其他远端文件权限不变。
+- 删除运行时 IP 的硬编码回退；恢复容器空闲内存后再采集 guest 身份；面板报告共享硬件档案。
+
 ## 1.4.142 — 2026-11-18 · 安装升级失败可恢复、本地排队 529 可区分
 
 - 一键安装与升级在 `compose pull` 失败时还原 `.env` 的 `VM2API_IMAGE_TAG`。此前目标 tag 先写入 `.env` 再拉镜像，拉取失败直接退出，`.env` 指向一个不存在的镜像，下一次 `compose up` 起不来控制面。
@@ -833,15 +842,6 @@
 
 - #859：透传关闭时，任何入站都先收成标准 Anthropic 结构再进人设：调用方 billing 删掉并由项目重写；调用方 User-Agent 不出站。只有协议页打开官方家族透传才保留这两者。第三方工具名改为 `mcp__`，回包按原名还原。
 - #836：`ensureSlotGuestBinDir` 原子替换失败时清理 `${dest}.${pid}.tmp` 暂存文件，避免 `data/run/slot-guest-bin` 下残留堆积。
-- 新建槽位铸造唯一计算机身份：machine-id / 主机名 / MAC / SMBIOS UUID 不再随 vm-id 固定，多套部署的同号槽不再是同一台电脑；主机名不再出现 DMI 占位串；`vms/<id>/machine-id` 落后于记录时重写。
-- 设备 ID 统一：槽位 `device_id` 跟随槽内 CLI 的安装 `userID`（`CLAUDE_CONFIG_DIR` 下的 `.claude.json`），本机槽首次启动前预写；重置指纹同时改 `userID`（`restart_required`）。旧 `machineID`、home 级残留 `~/.claude.json` 不再作为来源。
-- 同一账号已在别的 Claude 槽上时，导入 / 槽位包返回 `409 account_bound_elsewhere`（`allow_shared_account: true` 可放行）。换成另一个账号时，本机槽换新 `device_id`、重写 `.claude.json` 并重启运行时；清除凭证记下 `departed_account`。缺身份的新凭证不再继承旧账号 uuid / email；出站 `account_uuid` 不再取调用方值。
-- 代理 `bind_limit` 默认 1（已保存的配置保留原值），解析到同一出口 IP 的多行共用上限（`proxy_exit_ip_shared`）。
-- worker 代发的 refresh / usage / profile / count_tokens 改用槽内 cli-node 的 TLS（Bun / BoringSSL ClientHello，HTTP/1.1），不再模拟 Chrome；请求头、头顺序、UA（refresh / profile `axios/1.15.0`，usage `claude-code/<版本>`）、refresh body 的 `scope` 与字段顺序按 cli-node 2.1.303 抓包对齐。count_tokens 走 `?beta=true` 并带 SDK 头。控制面 bootstrap 头同样对齐；本地出口直连时强制 IPv4。
-- 控制面镜像（amd64）改为从源码编译 `kin-worker`，与 ARM64 镜像一致。
-- 槽位时区只来自出口或手动指定：出口地理没读到时记 `exit_timezone.status=unknown`，该槽不参与调度（受限 · 出口时区未知），检测成功或手动指定后解除；换绑代理时检测失败不再带着旧出口的时区接单。没有时区的槽拒绝新建容器 / 启动（`slot_timezone_unknown`），不再回落 UTC（本机）或 `America/Los_Angeles`（集群节点 / macOS 原生）。新增 `proxy_pool_config.geo_refresh_min`（默认 60 分钟）定时重读已绑出口的地理，出口 IP / 时区变化时绑定槽跟随并热写 `kernel.json`；批量地理检测也会同步绑定槽。
-
-已部署机升级：须从源码重建控制面镜像（含源码编译的 `kin-worker`）后重启。本机槽经 `slot-guest-bin` 暂存目录拿到新 `kin-worker`，无需重启槽；集群节点槽的 `kin-worker` 烘焙在槽镜像里，需走一次舰队更新。已有 `bind_limit` 不变，如需一出口一账号请在「代理池」改为 1。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
 
 已部署机升级：只更新 Node 控制面后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
 

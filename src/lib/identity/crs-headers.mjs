@@ -1,7 +1,8 @@
 import { applyBetaPolicyToHeader, shouldPassContext1mByPolicy } from '../protocol/model-policy.mjs'
 import { CONTEXT_1M_BETA, hasClaudeCode1mSuffix } from '../protocol/context-1m.mjs'
-import { OFFICIAL_CLAUDE_CLI_UA, OFFICIAL_STAINLESS } from './vm-identity.mjs'
+import { OFFICIAL_CLAUDE_CLI_UA, OFFICIAL_CLI_VERSION, OFFICIAL_STAINLESS } from './vm-identity.mjs'
 import { isOfficialClaudeUa } from './official-claude-ua.mjs'
+import { filterBetasForSlotCli } from '../protocol/claude-code-betas.mjs'
 
 export { isOfficialClaudeUa, isUnofficialClaudeEntrypointUa, CLAUDE_CLI_UA_RE } from './official-claude-ua.mjs'
 
@@ -243,7 +244,9 @@ export function loadStoredHeaders(homeDir) {
 
 function applyReplayBetaPolicy(headers, model = '', isOfficial = false, want1m = false) {
   if (!headers || typeof headers !== 'object') return headers
-  const beta = headers['anthropic-beta'] || ''
+  const original = headers['anthropic-beta'] || ''
+  const version = /^claude-cli\/(\d+\.\d+\.\d+)\b/.exec(headers['user-agent'] || '')?.[1] || OFFICIAL_CLI_VERSION
+  const beta = isOfficial ? filterBetasForSlotCli(original, version) : original
   const optIn1m = want1m === true || hasClaudeCode1mSuffix(model)
   let cleaned
   try {
@@ -252,7 +255,7 @@ function applyReplayBetaPolicy(headers, model = '', isOfficial = false, want1m =
     const drop1m = (!isOfficial && !optIn1m) || !shouldPassContext1mByPolicy(model)
     cleaned = drop1m ? stripBetaTokens(beta) : beta
   }
-  if (cleaned === beta) return headers
+  if (cleaned === original) return headers
   const next = { ...headers }
   if (cleaned) next['anthropic-beta'] = cleaned
   else delete next['anthropic-beta']
