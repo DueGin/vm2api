@@ -33,6 +33,7 @@ const COLUMNS = [
   'geo_region',
   'geo_city',
   'geo_isp',
+  'geo_asn',
   'geo_timezone',
   'geo_checked_at',
   'geo_error',
