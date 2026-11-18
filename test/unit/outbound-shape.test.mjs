@@ -15,6 +15,7 @@ import {
 } from '../../src/lib/protocol/outbound-shape.mjs'
 import { sealClaudeCodeCch } from '../../src/lib/identity/cch.mjs'
 import { OFFICIAL_303_MAIN_PROMPT } from '../../src/lib/identity/official-profiles.mjs'
+import { OFFICIAL_CLI_VERSION } from '../../src/lib/identity/vm-identity.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const SECRET_BODY = {
@@ -30,7 +31,10 @@ const SECRET_BODY = {
     { role: 'system', content: '# Environment\n - Primary working directory: /home/alice/project' },
   ],
   system: [
-    { type: 'text', text: 'x-anthropic-billing-header: cc_version=2.1.321.abc; cc_entrypoint=sdk-cli; cch=00000;' },
+    {
+      type: 'text',
+      text: `x-anthropic-billing-header: cc_version=${OFFICIAL_CLI_VERSION}.abc; cc_entrypoint=sdk-cli; cch=00000;`,
+    },
     {
       type: 'text',
       text: "You are Claude Code, Anthropic's official CLI for Claude.",
@@ -143,7 +147,7 @@ test('cli: --shape and --against-profile run on a body file without printing tex
   }
 })
 
-function wireOf(body, ua = 'claude-cli/2.1.321 (external, sdk-cli)') {
+function wireOf(body, ua = `claude-cli/${OFFICIAL_CLI_VERSION} (external, sdk-cli)`) {
   const raw = JSON.stringify(sealClaudeCodeCch(body))
   return { raw, body: JSON.parse(raw), headers: { 'user-agent': ua, 'content-length': String(Buffer.byteLength(raw)) } }
 }
@@ -156,6 +160,15 @@ test('wire rules pass on a sealed 303 body and leak no text', () => {
   const sealed = wireOf(SECRET_BODY)
   assert.match(sealed.body.system[0].text, /cch=[0-9a-f]{5};/)
   assert.doesNotMatch(sealed.body.system[0].text, /cch=00000/)
+})
+
+test('wire diagnostics can check a CLI version other than the default wrap pin', () => {
+  const cliVersion = '9.9.9'
+  const body = structuredClone(SECRET_BODY)
+  body.system[0].text = body.system[0].text.replace(OFFICIAL_CLI_VERSION, cliVersion)
+  const wire = wireOf(body, `claude-cli/${cliVersion} (external, sdk-cli)`)
+  assert.deepEqual(ids(checkOfficial303Wire(wire)), ['wire.billing_version', 'wire.user_agent'])
+  assert.deepEqual(checkOfficial303Wire(wire, { cliVersion }), [])
 })
 
 test('wire rules: internal field, key order, version, UA, tail system, CCH, content-length', () => {
@@ -171,7 +184,7 @@ test('wire rules: internal field, key order, version, UA, tail system, CCH, cont
   assert.deepEqual(extra, [{ id: 'wire.extra_key', key: 'temperature', index: 9, blocking: false }])
 
   const old = structuredClone(SECRET_BODY)
-  old.system[0].text = old.system[0].text.replace('2.1.321', '2.1.296')
+  old.system[0].text = old.system[0].text.replace(OFFICIAL_CLI_VERSION, '2.1.296')
   assert.deepEqual(ids(checkOfficial303Wire(wireOf(old))), ['wire.billing_version'])
   const noBilling = structuredClone(SECRET_BODY)
   noBilling.system.shift()

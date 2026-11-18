@@ -15,6 +15,7 @@ import {
   isBillingText,
   isOfficialIdentityText,
 } from '../identity/official-profiles.mjs'
+import { OFFICIAL_CLI_VERSION } from '../identity/vm-identity.mjs'
 import { stabilizeOfficialContextBudget } from './outbound-attempt.mjs'
 
 function markerShape(control) {
@@ -267,7 +268,10 @@ function billingText(system) {
  * `{ id, ...details }`; details are keys, indexes and versions only. `blocking: false` marks
  * notes that go into the report without failing the capture.
  */
-export function checkOfficial303Wire(wire, { profile = OFFICIAL_PROFILES['2.1.303'] } = {}) {
+export function checkOfficial303Wire(
+  wire,
+  { profile = OFFICIAL_PROFILES['2.1.303'], cliVersion = OFFICIAL_CLI_VERSION } = {},
+) {
   const problems = []
   const body = wire?.body || {}
   const keys = Object.keys(body)
@@ -284,10 +288,10 @@ export function checkOfficial303Wire(wire, { profile = OFFICIAL_PROFILES['2.1.30
   if (!billing) problems.push({ id: 'wire.billing_missing' })
   else {
     const version = /\bcc_version=([^;\s]+)/.exec(billing)?.[1] || ''
-    if (!version.startsWith(`${profile.cliVersion}.`)) problems.push({ id: 'wire.billing_version', version })
+    if (!version.startsWith(`${cliVersion}.`)) problems.push({ id: 'wire.billing_version', version })
   }
   const ua = String(wire?.headers?.['user-agent'] || '')
-  if (!new RegExp(`^claude-cli/${escapeRegExp(profile.cliVersion)} `).test(ua))
+  if (!new RegExp(`^claude-cli/${escapeRegExp(cliVersion)} `).test(ua))
     problems.push({ id: 'wire.user_agent', ua: /^claude-cli\/[^\s]+/.exec(ua)?.[0] || '' })
   const messages = Array.isArray(body.messages) ? body.messages : []
   let lastUser = -1

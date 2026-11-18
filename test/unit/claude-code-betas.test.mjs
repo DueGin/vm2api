@@ -1,5 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { OFFICIAL_CLI_VERSION } from '../../src/lib/identity/vm-identity.mjs'
+import { CRAG_CLAUDE_VERSION } from '../../src/lib/vm/slot-engine.mjs'
 import {
   BETA_OAUTH,
   BETA_CLAUDE_CODE,
@@ -237,4 +239,17 @@ test('filterBetasForSlotCli drops tokens a pinned 2.1.303 slot CLI cannot send',
   // Order and dedupe are the caller's; the filter only removes.
   assert.equal(filterBetasForSlotCli(`${BETA_OAUTH},${BETA_OAUTH}`, '2.1.303'), `${BETA_OAUTH},${BETA_OAUTH}`)
   assert.equal(filterBetasForSlotCli(caller, '9.9.9'), caller)
+})
+
+test('the pinned wrap/cc and CRAG CLI versions each have a beta allowlist', () => {
+  for (const [dataplane, version] of [
+    ['wrap/cc', OFFICIAL_CLI_VERSION],
+    ['CRAG', CRAG_CLAUDE_VERSION],
+  ]) {
+    assert.equal(
+      filterBetasForSlotCli(`${BETA_OAUTH},not-a-real-slot-beta`, version),
+      BETA_OAUTH,
+      `为新版本补 beta 白名单：${dataplane} ${version}`,
+    )
+  }
 })

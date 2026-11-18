@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { OFFICIAL_CLI_VERSION } from '../../src/lib/identity/vm-identity.mjs'
 import { resolveSlotClaude } from '../../src/lib/vm/slot-engine.mjs'
 
 test('slot CLI follows VM kernel pins, inherited routing and placement without fallback', () => {
@@ -17,8 +18,13 @@ test('slot CLI follows VM kernel pins, inherited routing and placement without f
   assert.deepEqual(resolveSlotClaude({ dataplane: 'wrap' }, routing, remote), {
     bin: '/opt/kin/cli-node',
     native: false,
+    version: OFFICIAL_CLI_VERSION,
   })
-  assert.equal(resolveSlotClaude({ dataplane: 'cc' }, routing, local).bin, local.bins.cc)
+  assert.deepEqual(resolveSlotClaude({ dataplane: 'cc' }, routing, local), {
+    bin: local.bins.cc,
+    native: false,
+    version: OFFICIAL_CLI_VERSION,
+  })
   assert.equal(
     resolveSlotClaude({ crag_kernel_version: 'legacy' }, routing, local).bin,
     '/home/kincli/.kin/crag-v2/claude-code-2.1.321/claude',

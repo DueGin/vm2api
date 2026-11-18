@@ -14,7 +14,6 @@ import {
   rustKernelBusy,
 } from './rust-kernel-client.mjs'
 import { maxRequestBytes, readRoutingConfigFile, streamIdleTimeoutMs } from '../core/config.mjs'
-import { OFFICIAL_CLI_VERSION } from '../identity/vm-identity.mjs'
 import { resolveWorkstationProfile } from '../identity/workstation-profile.mjs'
 import { cacheTtlFromRouting, normalizeCacheTtl } from '../protocol/cache-ttl.mjs'
 import { thinkingDisplayMode } from '../protocol/thinking.mjs'
@@ -1337,7 +1336,7 @@ export function writeKernelConfig(
     persona_preset: resolveSlotPersonaPreset(vm, routing || {}),
     system_layout: resolveCliSystemLayout(vm, routing || {}),
     // CLI version used on the wire belongs to the shipped binary, not the persona template.
-    cli_version: claude.version || OFFICIAL_CLI_VERSION,
+    cli_version: claude.version,
     default_cache_ttl: defaultCacheTtl,
     thinking_display: thinkingDisplay,
     cc_entrypoint:

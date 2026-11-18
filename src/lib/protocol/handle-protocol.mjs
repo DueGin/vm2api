@@ -1806,7 +1806,7 @@ export function createHandleProtocol(deps) {
           } catch {
             // A mid-write routing file keeps the in-memory snapshot for this request.
           }
-          const slotCliVersion = resolveSlotClaude(selected.vm, routingNow).version || OFFICIAL_CLI_VERSION
+          const slotCliVersion = resolveSlotClaude(selected.vm, routingNow).version
           const identity = loadVmIdentity(selected.exec, { cliVersion: slotCliVersion })
           if (identity && attemptSessionId) identity.callerSessionId = attemptSessionId
           const entrypointNow = ccEntrypointFromRouting(routingNow)

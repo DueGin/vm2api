@@ -14,6 +14,7 @@ import {
   OFFICIAL_303_PRESET,
   personaPresetFromLegacyMode,
 } from '../identity/persona-template.mjs'
+import { OFFICIAL_CLI_VERSION } from '../identity/vm-identity.mjs'
 import { isCodexVm } from './vm-kind.mjs'
 
 export const INFERENCE_ENGINES = Object.freeze(['rust'])
@@ -211,6 +212,7 @@ export function resolveSlotClaude(vm, routing = {}, host = {}) {
   return {
     bin: dataplane === 'wrap' ? host.bins?.cli || CONTAINER_CLI_NODE_BIN : host.bins?.cc || CONTAINER_CC_NODE_BIN,
     native: false,
+    version: OFFICIAL_CLI_VERSION,
   }
 }
 

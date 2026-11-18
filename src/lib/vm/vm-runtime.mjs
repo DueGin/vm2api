@@ -39,7 +39,7 @@ import { cragV2KernelWrapperScript, installedCragV2Root, materializeResolvedKern
 import { ensureGuestMachineIdFile } from '../identity/workstation-fingerprint.mjs'
 import { ensureSlotComputer, rememberComputer } from '../identity/slot-computer.mjs'
 import { seedSlotUserId } from '../identity/slot-device-identity.mjs'
-import { OFFICIAL_CLI_VERSION, officialClaudeCliUa, slotEntrypoint } from '../identity/vm-identity.mjs'
+import { officialClaudeCliUa, slotEntrypoint } from '../identity/vm-identity.mjs'
 import { coerceRfc4122Uuid } from '../identity/rfc4122-uuid.mjs'
 import { boundProxyUrl, ensureProxyEgress, isLocalEgressProxy, slotNetworkForVm } from './egress.mjs'
 import { socksProxyEndpoint } from './socks-address.mjs'
@@ -886,7 +886,7 @@ export function writeWorkerFiles(vm, projectRoot, { transparent, routing, writeK
     max_event_bytes: 64 * 1024 * 1024,
     test_endpoints: testEndpoints,
     runtime_kind: runtimeKind(vm),
-    cli_version: resolveSlotClaude(vm, resolvedRouting).version || OFFICIAL_CLI_VERSION,
+    cli_version: resolveSlotClaude(vm, resolvedRouting).version,
   }
   workerConfig.oauth_user_agent = officialClaudeCliUa(workerConfig.cli_version, slotEntrypoint(resolvedRouting))
   if (onEgress || local) workerConfig.egress_mode = 'transparent'
