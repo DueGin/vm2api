@@ -34,9 +34,11 @@ export async function followExitGeoChange(
   }
   const results = []
   for (const vmId of change?.bound_vm_ids || []) {
+    if (getVm(projectRoot, vmId)?.proxy?.id !== change.proxy_id) continue
     const synced = await syncVmTimezoneFromProxy(projectRoot, proxyPool, vmId, {
       proxyId: change.proxy_id,
       detect: false,
+      geoError: change.error,
     })
     let kernelHot = false
     if (synced.applied) {
@@ -59,5 +61,9 @@ export function followExitGeoChanges(deps) {
     })
   }
   deps.proxyPool.on('geo-change', onChange)
-  return () => deps.proxyPool.off('geo-change', onChange)
+  deps.proxyPool.on('geo-error', onChange)
+  return () => {
+    deps.proxyPool.off('geo-change', onChange)
+    deps.proxyPool.off('geo-error', onChange)
+  }
 }

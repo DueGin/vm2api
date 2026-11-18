@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import vmContext from 'node:vm'
 import { DatabaseSync } from 'node:sqlite'
 import {
   describeNativePayload,
@@ -22,6 +23,7 @@ import { nodePlatformOf } from '../../src/lib/cluster/node-edit.mjs'
 import { nodeHostCommand, NODE_HOST_COMMAND, parseNodeHost } from '../../src/lib/cluster/node-host.mjs'
 import {
   bindPlacement,
+  ensurePlacementSlotTimezone,
   isNativeNodeVm,
   nodePlatform,
   unbindPlacement,
@@ -144,6 +146,82 @@ test('launchctl print parsing covers running, exited and missing jobs', () => {
   assert.equal(parseLaunchctlPrint(nested).state, 'stopped')
   assert.equal(parseLaunchctlPrint('Could not find service "x" in domain', 113).state, 'missing')
   assert.equal(parseLaunchctlPrint('garbage').state, 'unknown')
+})
+
+test('cluster timezone uses the bound exit and records unknown when no geo is available', async (t) => {
+  const root = tmpDir('kin-cluster-zone-')
+  t.after(() => {
+    unbindPlacement()
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+  const vm = { id: 'vm-01', node_id: 'node-fixture', proxy: { id: 'px-one' }, fingerprint: {} }
+  const file = path.join(root, 'vms', `${vm.id}.json`)
+  fs.mkdirSync(path.dirname(file))
+  fs.writeFileSync(file, JSON.stringify(vm))
+  let detected = 0
+  bindPlacement({
+    manager: {},
+    projectRoot: root,
+    proxyPool: {
+      proxyTimezone: () => '',
+      async detectGeo() {
+        detected++
+        return detected === 1 ? { ok: false, error: 'geo_timeout' } : { ok: true, geo: { timezone: 'Asia/Tokyo' } }
+      },
+    },
+  })
+  assert.equal(await ensurePlacementSlotTimezone(vm, root), '')
+  assert.equal(vm.exit_timezone.status, 'unknown')
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).exit_timezone.status, 'unknown')
+  assert.equal(await ensurePlacementSlotTimezone(vm, root), 'Asia/Tokyo')
+  assert.equal(vm.exit_timezone.status, 'aligned')
+  assert.equal(vm.fingerprint.timezone, 'Asia/Tokyo')
+  assert.equal(await ensurePlacementSlotTimezone(vm, root), 'Asia/Tokyo')
+  assert.equal(detected, 2)
+})
+
+test('old native slots resume loaded jobs or saved plists without publishing a new timezone', async () => {
+  const source = fs.readFileSync(new URL('../../src/lib/cluster/native-slot.mjs', import.meta.url), 'utf8')
+  const lifecycle = source.slice(
+    source.indexOf('async function resumeNativeSlotWithoutTimezone('),
+    source.indexOf('export async function stopNativeSlot('),
+  )
+  const vm = { id: 'vm-01', node_id: 'node-fixture' }
+  let state = 'running'
+  let hasPlist = false
+  const calls = []
+  const [start, reload] = vmContext.runInNewContext(
+    `${lifecycle.replaceAll('export ', '')}; [startNativeSlot, reloadNativeSlot]`,
+    {
+      path,
+      nativeLabels,
+      nativeSlotPaths,
+      nativeUnsupported: () => null,
+      ensurePlacementSlotTimezone: async () => '',
+      slotTimezoneUnknown: () => ({ code: 'slot_timezone_unknown' }),
+      vmNodeId: (vm) => vm.node_id,
+      nativeSession: async () => ({ client: {}, host: { root: '/remote' } }),
+      launchdDomain: async () => 'gui/501',
+      nativeServiceStatus: async () => ({ state }),
+      readRemoteFileNoFollow: async () => (hasPlist ? Buffer.from('deployed plist') : null),
+      clusterManager: () => ({ ensureSlotRelays: async () => ({}) }),
+      reconcileSlotCredentials: async () => {},
+      configureSlot: async () => assert.fail('must not configure a new service without a timezone'),
+      applyNativeRuntime: () => {},
+      kickstart: async (_session, _domain, _label, { kill }) => calls.push(kill ? 'restart' : 'kickstart'),
+      bootstrap: async (_session, _domain, plist) => calls.push(plist),
+    },
+  )
+  assert.equal((await start(vm, '/fixture')).action, 'already-running')
+  assert.equal((await reload(vm, '/fixture')).action, 'reloaded')
+  state = 'stopped'
+  assert.equal((await start(vm, '/fixture')).action, 'started')
+  state = 'missing'
+  assert.equal((await start(vm, '/fixture')).code, 'slot_timezone_unknown')
+  hasPlist = true
+  assert.equal((await start(vm, '/fixture')).action, 'started')
+  assert.equal((await start(vm, '/fixture', { recreate: true })).code, 'slot_timezone_unknown')
+  assert.deepEqual(calls, ['restart', 'kickstart', '/remote/vms/vm-01/launchd/com.vm2api.slot.vm-01.kernel.plist'])
 })
 
 test('only Claude slots on the node network exit can run natively', () => {

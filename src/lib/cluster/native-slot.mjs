@@ -29,9 +29,15 @@ import { isKvmRuntime, runtimeKind } from '../vm/runtime-kind.mjs'
 import { resolveKernelDataplane } from '../vm/slot-engine.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { displayName, slotTimezoneUnknown, STANDARD_LOCALE, writeWorkerFiles } from '../vm/vm-runtime.mjs'
-import { validTimezone } from '../core/timezone.mjs'
 import { describeNativePayload, ensureNativePayload, remoteNativePayloadDir } from './native-payload.mjs'
-import { clusterManager, nodeSession, placementProjectRoot, remoteSlotDir, vmNodeId } from './placement.mjs'
+import {
+  clusterManager,
+  ensurePlacementSlotTimezone,
+  nodeSession,
+  placementProjectRoot,
+  remoteSlotDir,
+  vmNodeId,
+} from './placement.mjs'
 import { openSftp, readRemoteFileNoFollow, runRemote, shellQuote, writeRemoteFile } from './remote-fs.mjs'
 import { pushSlotFiles, reconcileSlotCredentials, removeRemoteSlotDir } from './remote-slot-files.mjs'
 import { ClusterError, execCollect } from './ssh-link.mjs'
@@ -338,12 +344,6 @@ function applyNativeRuntime(vm, { nodeId, session, p, digest, domain, relays, sl
 }
 
 async function configureSlot(vm, projectRoot, routing) {
-  const blocked = nativeUnsupported(vm, routing)
-  if (blocked) return { fail: blocked }
-  // No default zone: the slot's zone must come from its exit or the operator.
-  const zone = validTimezone(vm.timezone)
-  if (!zone) return { fail: slotTimezoneUnknown(vm) }
-  vm.timezone = zone
   vm.locale = vm.locale || STANDARD_LOCALE
   const nodeId = vmNodeId(vm)
   const session = await nativeSession(vm)
@@ -367,38 +367,62 @@ async function configureSlot(vm, projectRoot, routing) {
   return { nodeId, session, p, digest: payload.digest, domain, relays, slotDir, plists, changed }
 }
 
-/** Twin of startRemoteSlot. A running kernel with an unchanged plist is left alone unless `recreate`. */
-export async function startNativeSlot(vm, projectRoot, { recreate = false, routing } = {}) {
+async function resumeNativeSlotWithoutTimezone(vm, projectRoot, { reload }) {
+  const nodeId = vmNodeId(vm)
+  const session = await nativeSession(vm)
+  const domain = await launchdDomain(session)
+  const label = nativeLabels(vm.id).kernel
+  const before = await nativeServiceStatus(session, domain, label)
+  const digest = vm.runtime?.payload_digest
+  const paths = nativeSlotPaths(session.host.root, vm.id, digest)
+  const plist = `${paths.launchd}/${label}.plist`
+  if (before.state === 'missing' && !(await readRemoteFileNoFollow(session.client, plist))) {
+    return slotTimezoneUnknown(vm)
+  }
+  const slotDir = path.join(projectRoot, 'vms', vm.id)
+  const relays = await clusterManager().ensureSlotRelays(nodeId, vm.id)
+  await reconcileSlotCredentials(vm, slotDir, session)
+  if (before.state === 'missing') await bootstrap(session, domain, plist)
+  else if (reload || before.state !== 'running') await kickstart(session, domain, label, { kill: reload })
+  const kernel = await nativeServiceStatus(session, domain, label)
+  applyNativeRuntime(vm, { nodeId, session, p: paths, digest, domain, relays, slotDir, kernel })
+  const action = before.state !== 'running' ? 'started' : reload ? 'reloaded' : 'already-running'
+  return { ok: true, action, runtime: vm.runtime }
+}
+
+async function runNativeSlot(vm, projectRoot, { recreate = false, routing, reload = false } = {}) {
   try {
-    const c = await configureSlot(vm, projectRoot, routing)
-    if (c.fail) return c.fail
-    const before = await nativeServiceStatus(c.session, c.domain, c.plists.kernel.label)
-    const kernelAction = await applyService(c.session, c.domain, c.plists.kernel, {
-      changed: c.changed.kernel,
-      restart: recreate,
+    const blocked = nativeUnsupported(vm, routing)
+    if (blocked) return blocked
+    if (!(await ensurePlacementSlotTimezone(vm, projectRoot))) {
+      return recreate ? slotTimezoneUnknown(vm) : await resumeNativeSlotWithoutTimezone(vm, projectRoot, { reload })
+    }
+    const config = await configureSlot(vm, projectRoot, routing)
+    const before = await nativeServiceStatus(config.session, config.domain, config.plists.kernel.label)
+    const kernelAction = await applyService(config.session, config.domain, config.plists.kernel, {
+      changed: config.changed.kernel,
+      restart: recreate || reload,
     })
-    const kernel = await nativeServiceStatus(c.session, c.domain, c.plists.kernel.label)
-    applyNativeRuntime(vm, { ...c, kernel })
-    const action = kernelAction === 'unchanged' ? 'already-running' : before.state === 'missing' ? 'created' : 'started'
+    const kernel = await nativeServiceStatus(config.session, config.domain, config.plists.kernel.label)
+    applyNativeRuntime(vm, { ...config, kernel })
+    let action = 'started'
+    if (reload && before.state === 'running') action = 'reloaded'
+    else if (kernelAction === 'unchanged') action = 'already-running'
+    else if (!reload && before.state === 'missing') action = 'created'
     return { ok: true, action, runtime: vm.runtime }
   } catch (err) {
     return failure(err)
   }
 }
 
+/** Twin of startRemoteSlot. A running kernel with an unchanged plist is left alone unless `recreate`. */
+export function startNativeSlot(vm, projectRoot, opts = {}) {
+  return runNativeSlot(vm, projectRoot, opts)
+}
+
 /** Twin of reloadRemoteSlot: republish config and bounce the kernel. */
-export async function reloadNativeSlot(vm, projectRoot, { routing } = {}) {
-  try {
-    const c = await configureSlot(vm, projectRoot, routing)
-    if (c.fail) return c.fail
-    const before = await nativeServiceStatus(c.session, c.domain, c.plists.kernel.label)
-    await applyService(c.session, c.domain, c.plists.kernel, { changed: c.changed.kernel, restart: true })
-    const kernel = await nativeServiceStatus(c.session, c.domain, c.plists.kernel.label)
-    applyNativeRuntime(vm, { ...c, kernel })
-    return { ok: true, action: before.state === 'running' ? 'reloaded' : 'started', runtime: vm.runtime }
-  } catch (err) {
-    return failure(err)
-  }
+export function reloadNativeSlot(vm, projectRoot, { routing } = {}) {
+  return runNativeSlot(vm, projectRoot, { routing, reload: true })
 }
 
 export async function stopNativeSlot(vm) {
@@ -532,7 +556,7 @@ export async function refreshNativeSlotPayload(vm, projectRoot, { routing, recre
       kernel: { ok: true, skipped: true, reason: changed ? 'vm_stopped' : 'unchanged' },
     }
   }
-  const boot = await startNativeSlot(vm, projectRoot, { routing })
+  const boot = await startNativeSlot(vm, projectRoot, { routing, recreate: true })
   if (!boot.ok) return { id, node_id: nodeId, ok: false, code: boot.code, error: boot.error, image: null }
   return {
     id,

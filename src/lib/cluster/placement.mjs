@@ -17,8 +17,11 @@ import fs from 'node:fs'
 import { Transform } from 'node:stream'
 import { slotRuntimeOwner } from '../oauth/oauth-credentials.mjs'
 import { routingConfigFile } from '../core/config.mjs'
+import { validTimezone } from '../core/timezone.mjs'
 import { normalizeVmConfig, slotMemory } from '../vm/machine-spec.mjs'
+import { fillVmTimezoneFromExit } from '../vm/proxy-timezone.mjs'
 import { runtimeKind } from '../vm/runtime-kind.mjs'
+import { getVm } from '../vm/vm-registry.mjs'
 import {
   buildImage,
   dockerInfo,
@@ -40,8 +43,22 @@ const IMAGE_LOG_MAX = 64 * 1024
 
 let bound = null
 
-export function bindPlacement({ manager, projectRoot, getRouting }) {
-  bound = { manager, projectRoot, getRouting }
+export function bindPlacement({ manager, projectRoot, getRouting, proxyPool }) {
+  bound = { manager, projectRoot, getRouting, proxyPool }
+}
+
+export async function ensurePlacementSlotTimezone(vm, projectRoot) {
+  const zone = validTimezone(vm.timezone)
+  if (zone) return (vm.timezone = zone)
+  await fillVmTimezoneFromExit(projectRoot, bound?.proxyPool, vm.id)
+  const saved = getVm(projectRoot, vm.id)
+  if (!saved) return ''
+  if (saved.exit_timezone) vm.exit_timezone = saved.exit_timezone
+  if (!validTimezone(saved.timezone)) return ''
+  vm.timezone = saved.timezone
+  vm.timezone_source = saved.timezone_source
+  if (vm.fingerprint) vm.fingerprint.timezone = saved.timezone
+  return saved.timezone
 }
 
 export function unbindPlacement() {

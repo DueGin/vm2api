@@ -38,10 +38,20 @@ export function recordExitTimezone(projectRoot, vmId, record) {
   })
 }
 
+function transientGeoFailure(result) {
+  return /^geo_(?:transport_error(?::|$)|http_(?:408|425|429|5\d\d)$|lookup_failed$|timeout$)/.test(result.reason || '')
+}
+
 function recordSyncResult(projectRoot, vmId, proxyId, result) {
   if (NO_SLOT_REASONS.has(result.reason)) return
+  const exitIp = String(result.exitIp || '').trim() || null
   if (result.ok) {
-    recordExitTimezone(projectRoot, vmId, { status: 'aligned', timezone: result.timezone, proxy_id: proxyId || null })
+    recordExitTimezone(projectRoot, vmId, {
+      status: 'aligned',
+      timezone: result.timezone,
+      proxy_id: proxyId || null,
+      exit_ip: exitIp,
+    })
     return
   }
   const operator = OPERATOR_REASONS[result.reason]
@@ -49,7 +59,28 @@ function recordSyncResult(projectRoot, vmId, proxyId, result) {
     recordExitTimezone(projectRoot, vmId, { status: operator, proxy_id: proxyId || null })
     return
   }
-  recordExitTimezone(projectRoot, vmId, { status: 'unknown', reason: result.reason, proxy_id: proxyId || null })
+  const vm = getVm(projectRoot, vmId)
+  const previous = vm?.exit_timezone
+  if (
+    previous?.status === 'aligned' &&
+    previous.proxy_id === (proxyId || null) &&
+    validTimezone(vm.timezone) &&
+    (!previous.exit_ip || !exitIp || previous.exit_ip === exitIp) &&
+    transientGeoFailure(result)
+  ) {
+    recordExitTimezone(projectRoot, vmId, {
+      ...previous,
+      last_error: result.reason,
+      last_error_at: new Date().toISOString(),
+    })
+    return
+  }
+  recordExitTimezone(projectRoot, vmId, {
+    status: 'unknown',
+    reason: result.reason,
+    proxy_id: proxyId || null,
+    exit_ip: exitIp,
+  })
 }
 
 /**
@@ -62,17 +93,24 @@ export async function syncVmTimezoneFromProxy(
   projectRoot,
   proxyPool,
   vmId,
-  { force = false, detect = true, proxyId = null, persist = true } = {},
+  { force = false, detect = true, proxyId = null, persist = true, geoError = null } = {},
 ) {
-  const result = await resolveVmTimezoneFromProxy(projectRoot, proxyPool, vmId, { force, detect, proxyId, persist })
+  const result = await resolveVmTimezoneFromProxy(projectRoot, proxyPool, vmId, {
+    force,
+    detect,
+    proxyId,
+    persist,
+    geoError,
+  })
   if (persist) {
     const bound = proxyId || getVm(projectRoot, String(vmId || '').trim())?.proxy?.id || null
     recordSyncResult(projectRoot, String(vmId || '').trim(), bound, result)
   }
-  return result
+  const { exitIp, ...publicResult } = result
+  return publicResult
 }
 
-async function resolveVmTimezoneFromProxy(projectRoot, proxyPool, vmId, { force, detect, proxyId, persist }) {
+async function resolveVmTimezoneFromProxy(projectRoot, proxyPool, vmId, { force, detect, proxyId, persist, geoError }) {
   const id = String(vmId || '').trim()
   if (!id || !proxyPool) return skip('vm_id_required')
   if (!force && !proxyPool.followProxyTimezoneEnabled()) return skip('follow_proxy_timezone_disabled')
@@ -84,15 +122,14 @@ async function resolveVmTimezoneFromProxy(projectRoot, proxyPool, vmId, { force,
   const boundRow = vm.proxy?.id === bound ? vm.proxy : { id: bound }
   const host = slotHost(vm)
   let timezone = ''
+  let exitIp = null
   const nodeRow = host.nodeId ? localEgressIdForNode(host.nodeId) : null
   if (bound && nodeRow && isLocalEgressProxy(boundRow) && proxyPool.getProxyByIdWithAuth?.(nodeRow)) {
     // The slot leaves from its own node: that VPS's local row carries its geo.
-    timezone = proxyPool.proxyTimezone(nodeRow)
-    if (!timezone && detect) {
-      const detected = await proxyPool.detectGeo(nodeRow)
-      if (!detected?.ok) return skip(detected?.error || 'geo_lookup_failed')
-      timezone = validTimezone(detected.geo?.timezone)
-    }
+    const result = await resolveProxyRow(proxyPool, nodeRow, { detect, geoError, vmId: id })
+    if (!result.ok) return result
+    timezone = result.timezone
+    exitIp = result.exitIp
   } else if (bound && host.nodeId && isLocalEgressProxy(boundRow)) {
     // No node row (local egress never seeded): ask the node's route directly.
     let url
@@ -102,38 +139,54 @@ async function resolveVmTimezoneFromProxy(projectRoot, proxyPool, vmId, { force,
       return skip(err?.code || 'node_egress_unavailable')
     }
     const exit = await proxyPool.exitGeo(`node:${host.nodeId}`, url, { detect })
-    if (!exit.ok) return skip(exit.error)
+    if (!exit.ok) return skip(exit.error, exit.geo?.ip)
     timezone = validTimezone(exit.geo?.timezone)
+    exitIp = exit.geo?.ip
   } else {
-    timezone = bound ? proxyPool.proxyTimezone(bound) : proxyPool.timezoneForVm(id)
-    if (!timezone && detect && bound) {
-      const detected = await proxyPool.detectGeo(bound)
-      if (!detected?.ok) return skip(detected?.error || 'geo_lookup_failed')
-      timezone = validTimezone(detected.geo?.timezone)
-    }
+    const result = await resolveProxyRow(proxyPool, bound, { detect, geoError, vmId: id })
+    if (!result.ok) return result
+    timezone = result.timezone
+    exitIp = result.exitIp
   }
-  if (!timezone) return skip('proxy_timezone_unknown')
+  if (!timezone) return skip('proxy_timezone_unknown', exitIp)
   if (vm.timezone === timezone) {
     // Already aligned, but re-stamp the source so the panel stops showing the
     // zone as hand-pinned once the operator opted back into following.
     if (persist && force && vm.timezone_source !== 'proxy_geo') {
       persistVmTimezone(projectRoot, id, timezone, { source: 'proxy_geo' })
     }
-    return { ok: true, applied: false, timezone, reason: 'already_current' }
+    return { ok: true, applied: false, timezone, reason: 'already_current', exitIp }
   }
-  if (!persist) return { ok: true, applied: true, timezone, reason: null }
+  if (!persist) return { ok: true, applied: true, timezone, reason: null, exitIp }
   const summary = persistVmTimezone(projectRoot, id, timezone, { source: 'proxy_geo' })
   if (!summary) return skip('persist_failed')
-  return { ok: true, applied: true, timezone, reason: null }
+  return { ok: true, applied: true, timezone, reason: null, exitIp }
+}
+
+async function resolveProxyRow(proxyPool, proxyId, { detect, geoError, vmId }) {
+  const ip = proxyId ? proxyPool.proxyLocation?.(proxyId)?.ip : null
+  if (geoError) return skip(geoError, ip)
+  const timezone = proxyId ? proxyPool.proxyTimezone(proxyId) : proxyPool.timezoneForVm(vmId)
+  if (timezone || !detect || !proxyId) return { ok: true, timezone, exitIp: ip }
+  const detected = await proxyPool.detectGeo(proxyId)
+  const exitIp = detected?.geo?.ip || detected?.proxy?.geo?.ip || ip
+  if (!detected?.ok) return skip(detected?.error || 'geo_lookup_failed', exitIp)
+  return { ok: true, timezone: validTimezone(detected.geo?.timezone), exitIp }
 }
 
 /** A slot without a zone takes its exit's; a set zone (manual or already synced) stays. */
 export async function fillVmTimezoneFromExit(projectRoot, proxyPool, vmId) {
   const vm = getVm(projectRoot, vmId)
-  if (!vm?.proxy?.id || validTimezone(vm.timezone)) return null
+  if (!vm || validTimezone(vm.timezone)) return null
+  const proxyId = vm.proxy?.id
+  if (!proxyId || !proxyPool) {
+    const result = skip(proxyId ? 'proxy_pool_unavailable' : 'proxy_not_bound')
+    recordSyncResult(projectRoot, vmId, proxyId, result)
+    return result
+  }
   return syncVmTimezoneFromProxy(projectRoot, proxyPool, vmId, { force: true })
 }
 
-function skip(reason) {
-  return { ok: false, applied: false, timezone: null, reason }
+function skip(reason, exitIp = null) {
+  return { ok: false, applied: false, timezone: null, reason, exitIp }
 }

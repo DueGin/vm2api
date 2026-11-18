@@ -59,7 +59,6 @@ import { projectCragUniversalVm, readCragClusterSubscription } from '../vm/crag-
 import { withCragRuntimeAdmission } from '../vm/slot-runtime-admission.mjs'
 import { publishKvmCragLicense } from '../vm/kvm-crag-license.mjs'
 import { patchVmRecord } from '../vm/vm-registry.mjs'
-import { validTimezone } from '../core/timezone.mjs'
 import {
   containerAction,
   createContainerRaw,
@@ -79,6 +78,7 @@ import { refreshNativeSlotPayload, currentNativePayloadDigest } from './native-s
 import {
   awaitSlotImageBuild,
   clusterManager,
+  ensurePlacementSlotTimezone,
   isNativeNodeVm,
   nodeSession,
   parseMemoryBytes,
@@ -1076,10 +1076,6 @@ export async function refreshClusterSlotPayloads(
 
 async function prepare(vm, projectRoot, routing, { pinnedImageId = null } = {}) {
   vm.kernel = vm.kernel && OS_CATALOG[vm.kernel] ? vm.kernel : 'ubuntu-24.04'
-  // No default zone: America/Los_Angeles on a Tokyo exit is a contradiction the upstream can see.
-  const zone = validTimezone(vm.timezone)
-  if (!zone) return { fail: slotTimezoneUnknown(vm) }
-  vm.timezone = zone
   vm.locale = vm.locale || STANDARD_LOCALE
   const nodeId = vmNodeId(vm)
   const session = await nodeSession(nodeId)
@@ -1167,6 +1163,56 @@ export async function syncRemoteSlotRestartPolicy(vm, routing) {
 }
 
 /** Remote twin of startVmRuntime. Running + same image/network is left alone (Node restart must not bounce slots). */
+async function resumeRemoteSlotWithoutTimezone(vm, projectRoot, routing, { reload = false } = {}) {
+  const nodeId = vmNodeId(vm)
+  const session = await nodeSession(nodeId)
+  const name = containerName(vm.id)
+  const existing = await inspectContainerOrNull(session.docker, name)
+  if (!existing) return slotTimezoneUnknown(vm)
+
+  const running = !!existing.State?.Running
+  const relays = await clusterManager().ensureSlotRelays(nodeId, vm.id)
+  const slotDir = path.join(projectRoot, 'vms', vm.id)
+  if (isKvmRuntime(vm)) {
+    ensureKvmMachineRecord(vm, { projectRoot, containerEnv: dockerEnvMap(existing.Config?.Env), persist: true })
+  }
+  await reconcileSlotCredentials(vm, slotDir, session)
+  if (reload || !running || existing.State?.Restarting) {
+    if (isKvmRuntime(vm) && running && !existing.State?.Restarting) {
+      await restartRemoteKvmKernel(vm, session, name)
+    } else {
+      await containerAction(session.docker, name, running || existing.State?.Restarting ? 'restart' : 'start')
+      await chownRemoteKvmBinds(session, name, vm)
+    }
+  }
+  const owner = remoteSlotOwner(session.host, vm)
+  applyRuntime(vm, {
+    nodeId,
+    name,
+    image: existing.Config?.Image,
+    network: existing.HostConfig?.NetworkMode,
+    user: existing.Config?.User || `${owner.uid}:${owner.gid}`,
+    relays,
+    slotDir,
+    egress: vm.runtime?.egress,
+    egressContainer: vm.runtime?.egress_container,
+    routing,
+    accel: vm.runtime?.accel,
+    info: await inspectContainerOrNull(session.docker, name),
+  })
+  const action = !running ? 'started' : reload || existing.State?.Restarting ? 'reloaded' : 'already-running'
+  return { ok: true, action, runtime: vm.runtime }
+}
+
+async function restartRemoteKvmKernel(vm, session, name) {
+  const argv = slotExecArgv(
+    { ...vm, runtime: { ...(vm.runtime || {}), container: name, type: 'kvm' } },
+    kvmCragAppArmorCommand({ restart: true }),
+    { user: '0', interactive: true },
+  )
+  await runRemote(session.client, ['docker', ...argv].map(shellQuote).join(' '), { timeoutMs: 60_000 })
+}
+
 export async function startRemoteSlot(vm, projectRoot, opts = {}) {
   const { recreate = false, pinnedImageId = null } = opts
   const routing = resolveSlotRouting(projectRoot, opts.routing)
@@ -1178,6 +1224,11 @@ export async function startRemoteSlot(vm, projectRoot, opts = {}) {
 async function startRemoteSlotAdmitted(vm, projectRoot, { recreate, routing, pinnedImageId = null }) {
   try {
     if (!isKvmRuntime(vm)) slotDockerCpus(vm)
+    if (!(await ensurePlacementSlotTimezone(vm, projectRoot))) {
+      return recreate || pinnedImageId
+        ? slotTimezoneUnknown(vm)
+        : await resumeRemoteSlotWithoutTimezone(vm, projectRoot, routing)
+    }
     const p = await prepare(vm, projectRoot, routing, { pinnedImageId })
     if (p.fail) return p.fail
     if (resolveKernelDataplane(vm, routing) === 'crag') await projectCragUniversalVm(projectRoot, vm)
@@ -1287,6 +1338,9 @@ export async function reloadRemoteSlot(vm, projectRoot, opts = {}) {
 async function reloadRemoteSlotAdmitted(vm, projectRoot, { routing }) {
   try {
     if (!isKvmRuntime(vm)) slotDockerCpus(vm)
+    if (!(await ensurePlacementSlotTimezone(vm, projectRoot))) {
+      return await resumeRemoteSlotWithoutTimezone(vm, projectRoot, routing, { reload: true })
+    }
     const p = await prepare(vm, projectRoot, routing)
     if (p.fail) return p.fail
     const { nodeId, session, image, user, remoteDir, slotDir } = p
@@ -1327,12 +1381,7 @@ async function reloadRemoteSlotAdmitted(vm, projectRoot, { routing }) {
       if (resolveKernelDataplane(vm, routing) === 'crag') {
         await publishKvmCragLicense(projectRoot, vm, { force: true })
       }
-      const argv = slotExecArgv(
-        { ...vm, runtime: { ...(vm.runtime || {}), container: name, type: 'kvm' } },
-        kvmCragAppArmorCommand({ restart: true }),
-        { user: '0', interactive: true },
-      )
-      await runRemote(session.client, ['docker', ...argv].map(shellQuote).join(' '), { timeoutMs: 60_000 })
+      await restartRemoteKvmKernel(vm, session, name)
     } else {
       await containerAction(session.docker, name, running ? 'restart' : 'start')
       await chownRemoteKvmBinds(session, name, vm)

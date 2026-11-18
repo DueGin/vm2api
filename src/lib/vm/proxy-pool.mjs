@@ -1733,6 +1733,10 @@ export class ProxyPool extends EventEmitter {
     return p ? validTimezone(p.geo_timezone) : ''
   }
 
+  proxyLocation(proxyId) {
+    return proxyGeoOf(this.state.proxies.find((row) => row.id === proxyId))
+  }
+
   /** Detected IANA zone of whatever proxy currently serves this VM, '' when unknown. */
   timezoneForVm(vmId) {
     const p = this.state.proxies.find((x) => proxyHasVm(x, vmId))
@@ -1823,12 +1827,19 @@ export class ProxyPool extends EventEmitter {
       })
       for (const p of due) {
         const before = { ip: proxyExitIp(p), timezone: validTimezone(p.geo_timezone) }
+        const hadError = !!p.geo_error
         const result = await this.detectGeo(p.id, { force: true })
         refreshed += 1
-        if (!result?.ok) continue
         const after = { ip: proxyExitIp(p), timezone: validTimezone(p.geo_timezone) }
-        if (before.ip === after.ip && before.timezone === after.timezone) continue
         const change = { proxy_id: p.id, from: before, to: after, bound_vm_ids: boundVmIdsOf(p) }
+        if (!result?.ok) {
+          this.emit('geo-error', { ...change, error: result?.error || 'geo_lookup_failed' })
+          continue
+        }
+        if (before.ip === after.ip && before.timezone === after.timezone) {
+          if (hadError) this.emit('geo-change', change)
+          continue
+        }
         changes.push(change)
         this.emit('geo-change', change)
       }

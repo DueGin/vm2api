@@ -87,6 +87,41 @@ test('an unreadable exit keeps the slot out of the pool instead of keeping the o
   assert.notEqual(evaluateSlotGate(getVm(root, 'vm-01')).reason, 'exit_timezone_unknown')
 })
 
+test('scheduled geo failure keeps an aligned slot eligible and records the error', async (t) => {
+  const { root, pool, proxyId } = setup(t, { geo: [TOKYO, { ok: false, error: 'geo_http_429' }] })
+  writeVm(root, slot(proxyId))
+  assert.equal(pool.bind(proxyId, 'vm-01').ok, true)
+  await pool.detectGeo(proxyId)
+  await syncVmTimezoneFromProxy(root, pool, 'vm-01', { proxyId, detect: false })
+
+  const pending = []
+  pool.on('geo-error', (change) => pending.push(followExitGeoChange(change, { projectRoot: root, proxyPool: pool })))
+  pool.state.proxies[0].geo_checked_at = new Date(0).toISOString()
+  await pool.refreshBoundGeo()
+  await Promise.all(pending)
+
+  const vm = getVm(root, 'vm-01')
+  assert.equal(vm.exit_timezone.status, 'aligned')
+  assert.equal(vm.exit_timezone.exit_ip, TOKYO.geo.ip)
+  assert.equal(vm.exit_timezone.last_error, 'geo_http_429')
+  assert.notEqual(evaluateSlotGate(vm).reason, 'exit_timezone_unknown')
+})
+
+test('geo transport failure after the exit IP has changed gates the slot', async (t) => {
+  const { root, pool, proxyId } = setup(t, {
+    geo: [TOKYO, { ok: false, error: 'geo_transport_error:timeout' }],
+  })
+  writeVm(root, slot(proxyId))
+  await syncVmTimezoneFromProxy(root, pool, 'vm-01', { proxyId })
+  Object.assign(pool.state.proxies[0], { geo_ip: '198.51.100.9', geo_timezone: null, geo_checked_at: null })
+  const synced = await syncVmTimezoneFromProxy(root, pool, 'vm-01', { proxyId })
+  assert.equal(synced.ok, false)
+  const vm = getVm(root, 'vm-01')
+  assert.equal(vm.exit_timezone.status, 'unknown')
+  assert.equal(vm.exit_timezone.exit_ip, '198.51.100.9')
+  assert.deepEqual(evaluateSlotGate(vm), { ok: false, reason: 'exit_timezone_unknown' })
+})
+
 test('a hand-set zone is the operator call and lifts the unknown verdict', async (t) => {
   const { root, pool, proxyId } = setup(t)
   writeVm(root, slot(proxyId))

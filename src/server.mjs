@@ -1017,7 +1017,7 @@ const clusterManager = new ClusterManager({
   },
 })
 localEgressCluster = clusterManager
-bindPlacement({ manager: clusterManager, projectRoot: cfg.paths.project })
+bindPlacement({ manager: clusterManager, projectRoot: cfg.paths.project, proxyPool })
 await startNodeEgressSocks({ clientFor: (nodeId) => clusterManager.client(nodeId) })
 clusterManager.start()
 clusterManager.restoreSlotRelays()

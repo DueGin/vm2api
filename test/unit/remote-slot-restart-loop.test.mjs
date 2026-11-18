@@ -19,8 +19,8 @@ import { kernelCpuCommand } from '../../src/lib/vm/kernel-cpu.mjs'
 // No SSH, Docker daemon, credentials or production filesystem is accessed.
 const source = fs.readFileSync(new URL('../../src/lib/cluster/remote-slot.mjs', import.meta.url), 'utf8')
 const start = source.slice(
-  source.indexOf('export async function startRemoteSlot('),
-  source.indexOf('/** Remote twin of reloadSlotWorker'),
+  source.indexOf('async function resumeRemoteSlotWithoutTimezone('),
+  source.indexOf('/** Update a node slot'),
 )
 const restartPolicy = source.slice(
   source.indexOf('function remoteSlotRestartPolicy('),
@@ -106,6 +106,7 @@ function fixture({
     id: 'vm-restart-fixture',
     node_id: 'node-fixture',
     status: 'running',
+    timezone: 'Asia/Tokyo',
     runtime: { type: kind, accel: 'kvm' },
   }
   const kvmEnv = kind === 'kvm' ? ['KIN_KVM_MAC=52:54:00:11:22:33', 'KIN_KVM_DISK_SERIAL=KINfixture01'] : undefined
@@ -143,6 +144,13 @@ function fixture({
       remoteDir: '/fixture',
       slotDir: '/fixture',
     }),
+    ensurePlacementSlotTimezone: async (vm) => validTimezone(vm.timezone),
+    vmNodeId: (vm) => vm.node_id,
+    nodeSession: async () => ({ docker: {}, client: {}, host: { root: '/fixture', uid: 1000, gid: 1000 } }),
+    remoteSlotDir: (_host, id) => `/fixture/vms/${id}`,
+    remoteSlotOwner: () => ({ uid: 1000, gid: 1000 }),
+    path: { join: (...parts) => parts.join('/') },
+    slotTimezoneUnknown: () => ({ ok: false, code: 'slot_timezone_unknown' }),
     isKvmRuntime: () => kind === 'kvm',
     ensureRemoteEgress: async () => ({ ok: true, network: 'network' }),
     containerName: () => 'kin-fixture',
@@ -163,7 +171,11 @@ function fixture({
     ensureGuestMachineIdFile: () => {},
     pushSlotFiles: async () => {},
     migrateClaudeDir: async () => {},
-    runRemote: async () => {},
+    runRemote: async (_client, command) => {
+      if (command.startsWith('docker ')) calls.push('restart-guest-kernel')
+    },
+    slotExecArgv: () => ['exec', 'fixture'],
+    kvmCragAppArmorCommand: () => [],
     shellQuote: (s) => s,
     reconcileSlotCredentials: async () => {},
     releaseRemoteEgress: async () => {},
@@ -193,9 +205,46 @@ function fixture({
     hasClusterSubscriptionBinds,
     publishClusterSubscription: async () => calls.push('publish-subscription'),
   }
-  const boot = vmContext.runInNewContext(`${restartPolicy}; ${start.replace('export ', '')}; startRemoteSlot`, io)
-  return { calls, target, boot: () => boot(target, '/fixture'), state: () => info?.State }
+  const [boot, reload] = vmContext.runInNewContext(
+    `${restartPolicy}; ${start.replaceAll('export ', '')}; [startRemoteSlot, reloadRemoteSlot]`,
+    io,
+  )
+  return {
+    calls,
+    target,
+    boot: (options) => boot(target, '/fixture', options),
+    reload: () => reload(target, '/fixture'),
+    state: () => info?.State,
+  }
 }
+
+test('old remote slot with unknown timezone starts the existing container even if image metadata differs', async () => {
+  const f = fixture({ running: false, mismatch: true })
+  f.target.timezone = null
+  assert.equal((await f.boot()).action, 'started')
+  assert.deepEqual(f.calls, ['start', 'runtime'])
+})
+
+for (const kind of ['docker', 'kvm']) {
+  test(`old remote ${kind} reload with unknown timezone preserves deployed config`, async () => {
+    const f = fixture({ kind, mismatch: true })
+    f.target.timezone = null
+    assert.equal((await f.reload()).action, 'reloaded')
+    assert.deepEqual(f.calls, [kind === 'kvm' ? 'restart-guest-kernel' : 'restart', 'runtime'])
+  })
+}
+
+test('remote timezone is required for both new containers and explicit recreation', async () => {
+  for (const [fixtureOptions, bootOptions] of [
+    [{ missing: true }, {}],
+    [{}, { recreate: true }],
+  ]) {
+    const f = fixture(fixtureOptions)
+    f.target.timezone = null
+    assert.equal((await f.boot(bootOptions)).code, 'slot_timezone_unknown')
+    assert.deepEqual(f.calls, [])
+  }
+})
 
 test('a subscribed cluster Docker slot replaces the old container before starting with read-only license mounts', async () => {
   const f = fixture({ cragReady: true, subscription: true })
