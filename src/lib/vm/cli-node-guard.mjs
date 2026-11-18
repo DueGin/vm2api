@@ -10,8 +10,13 @@
  * from a closed terminal (cli-node ignores SIGHUP) and is killed. A process
  * whose environ cannot be read is left alone.
  */
-import { execDetached } from '../cluster/docker-remote.mjs'
-import { NODE_CLAUDE_SETUP_PY, slotContainerName } from '../transport/rust-kernel-supervisor.mjs'
+import { execCapture, execDetached } from '../cluster/docker-remote.mjs'
+import {
+  NODE_CLAUDE_SETUP_PY,
+  persistNodeClaudeUserId,
+  slotContainerName,
+} from '../transport/rust-kernel-supervisor.mjs'
+import { normalizeDeviceId } from '../identity/slot-device-identity.mjs'
 import { isCodexVm } from './vm-kind.mjs'
 import { isKvmRuntime } from './runtime-kind.mjs'
 import { slotExecCmd } from './slot-exec.mjs'
@@ -73,9 +78,11 @@ exit 0
 `
 
 export function createCliNodeGuard({
+  projectRoot,
   listTargets,
   liveTokens = () => [],
   exec = execDetached,
+  capture = execCapture,
   intervalMs = CLI_NODE_GUARD_INTERVAL_MS,
   logger = console,
   hostFor = slotHost,
@@ -102,13 +109,19 @@ export function createCliNodeGuard({
             user: isKvmRuntime(vm) ? '0' : undefined,
           })
           await exec(connect, container, Cmd, { user: User })
-          if (host.bakedKernel && !isKvmRuntime(vm) && Date.now() - (setupAt.get(vm.id) || 0) >= NODE_SETUP_INTERVAL_MS) {
-            const setup = slotExecCmd(vm, ['python3', '-c', NODE_CLAUDE_SETUP_PY], {
-              detach: true,
+          if (
+            host.bakedKernel &&
+            !isKvmRuntime(vm) &&
+            Date.now() - (setupAt.get(vm.id) || 0) >= NODE_SETUP_INTERVAL_MS
+          ) {
+            const deviceId = normalizeDeviceId(vm.fingerprint?.device_id)
+            const result = await capture(connect, container, ['python3', '-c', NODE_CLAUDE_SETUP_PY, deviceId], {
               user: host.execUser(vm),
+              timeoutMs: 8000,
+              maxOutputBytes: 4096,
             })
-            await exec(connect, container, setup.Cmd, { user: setup.User })
             setupAt.set(vm.id, Date.now())
+            if (result.exitCode === 0) persistNodeClaudeUserId(projectRoot, vm, result.stdout)
           }
         } catch (err) {
           logger.warn?.(`[cli-node-guard] ${vm.id} ${err?.message || err}`)

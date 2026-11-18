@@ -1053,6 +1053,7 @@ for (const vm of listVms(cfg.paths.project)) {
   }
 }
 cliNodeGuard = createCliNodeGuard({
+  projectRoot: cfg.paths.project,
   listTargets: () => listVms(cfg.paths.project),
   liveTokens: () => slotShell.liveShellTokens?.() || [],
 })

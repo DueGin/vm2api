@@ -20,7 +20,8 @@ import { thinkingDisplayMode } from '../protocol/thinking.mjs'
 import { getModelPolicy } from '../protocol/model-policy.mjs'
 import { ccEntrypointFromRouting } from '../identity/crs-persona.mjs'
 import { normalizeDeviceId } from '../identity/slot-device-identity.mjs'
-import { setVmSchedulable, listVms, getVm } from '../vm/vm-registry.mjs'
+import { setVmSchedulable, listVms, getVm, patchVmRecord } from '../vm/vm-registry.mjs'
+import { isValidVmId } from '../vm/vm-file.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { isKvmRuntime, runtimeKind } from '../vm/runtime-kind.mjs'
 import { slotExecArgv } from '../vm/slot-exec.mjs'
@@ -301,23 +302,41 @@ for f, create in ((home + "/.claude/.claude.json", True), (home + "/.claude.json
             p["hasTrustDialogAccepted"] = True
             doc["projects"][folder] = p
             changed = True
-    if not changed:
-        continue
-    mode = os.stat(f).st_mode & 0o777 if os.path.exists(f) else 0o600
-    with tempfile.NamedTemporaryFile(mode="w", dir=os.path.dirname(f), prefix=".kin-setup-", delete=False) as fh:
-        tmp = fh.name
-        try:
-            fh.write(json.dumps(doc) + "\\n")
-            fh.close()
-            os.chmod(tmp, mode)
-            os.replace(tmp, f)
-        finally:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-    print("patched", f)
+    if changed:
+        mode = os.stat(f).st_mode & 0o777 if os.path.exists(f) else 0o600
+        with tempfile.NamedTemporaryFile(mode="w", dir=os.path.dirname(f), prefix=".kin-setup-", delete=False) as fh:
+            tmp = fh.name
+            try:
+                fh.write(json.dumps(doc) + "\\n")
+                fh.close()
+                os.chmod(tmp, mode)
+                os.replace(tmp, f)
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+        print("patched", f)
+    user_id = doc.get("userID")
+    if create and isinstance(user_id, str) and re.fullmatch(r"[0-9a-fA-F]{64}", user_id):
+        print("id=" + user_id)
 `
 const NODE_SETUP_RECHECK_MS = 10 * 60_000
 const nodeSetupAcceptedAt = new Map()
+
+export function persistNodeClaudeUserId(projectRoot, vm, stdout) {
+  const userId = normalizeDeviceId(/^id=([0-9a-f]{64})$/im.exec(String(stdout || ''))?.[1])
+  if (!userId || !projectRoot || !vm?.node_id || !isValidVmId(vm.id)) return
+  const current = getVm(projectRoot, vm.id)
+  if (
+    !current ||
+    current.node_id !== vm.node_id ||
+    slotContainerName({ vm: current }) !== slotContainerName({ vm }) ||
+    isKvmRuntime(current) ||
+    isCodexVm(current) ||
+    current.fingerprint?.official_user_id === userId
+  )
+    return
+  patchVmRecord(projectRoot, vm.id, { fingerprint: { ...current.fingerprint, official_user_id: userId } })
+}
 
 async function acceptNodeClaudeSetup(exec, runDockerExec) {
   const host = slotHost(exec?.vm)
@@ -334,6 +353,7 @@ async function acceptNodeClaudeSetup(exec, runDockerExec) {
     { timeoutMs: 8000 },
   )
   if (!result?.ok) return 'node_claude_setup_failed'
+  persistNodeClaudeUserId(projectRootFromExec(exec), exec.vm, result.stdout)
   nodeSetupAcceptedAt.set(vmId, Date.now())
   return String(result.stdout || '').includes('patched') ? 'node_claude_setup' : null
 }

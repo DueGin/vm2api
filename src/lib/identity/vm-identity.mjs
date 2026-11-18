@@ -10,6 +10,7 @@ import { readSlotCredentialIdentity } from '../oauth/oauth-credentials.mjs'
 import { buildSlotSettingsEnv } from '../protocol/seed-policy.mjs'
 import { buildKinSeedJson } from './workstation-profile.mjs'
 import { isHexDeviceId } from './workstation-fingerprint.mjs'
+import { normalizeDeviceId } from './slot-device-identity.mjs'
 
 export function readJsonSafe(p, fallback = null) {
   try {
@@ -106,11 +107,8 @@ export function loadVmIdentity(exec = {}, { cliVersion = OFFICIAL_CLI_VERSION } 
   // previous account's id. Before the CLI has one, the slot fingerprint
   // (seeded into .claude.json at start) stands in. A legacy machineID is never used.
   // Slots run the CLI with CLAUDE_CONFIG_DIR=~/.claude: the nested file is its own.
-  const cliUserId = isHexDeviceId(dirClaude.userID)
-    ? String(dirClaude.userID).toLowerCase()
-    : isHexDeviceId(homeClaude.userID)
-      ? String(homeClaude.userID).toLowerCase()
-      : ''
+  const nodeUserId = exec.vm?.node_id ? normalizeDeviceId(fp.official_user_id) : ''
+  const cliUserId = nodeUserId || normalizeDeviceId(dirClaude.userID) || normalizeDeviceId(homeClaude.userID)
   const deviceId = cliUserId || outboundDeviceId(fp.device_id, exec.vmId || 'kin-vm')
   const sessionId = fp.session_id || crypto.randomUUID()
   const slotCred = readSlotCredentialIdentity(home)
@@ -153,7 +151,7 @@ export function loadVmIdentity(exec = {}, { cliVersion = OFFICIAL_CLI_VERSION } 
     deviceId,
     sessionId,
     machineId: deviceId,
-    userId: claudeJson.userID || null,
+    userId: cliUserId || null,
     displayName: claudeJson.oauthAccount?.displayName || null,
     settings: settingsOut,
     metadataUserId: formatMetadataUserId({ deviceId, accountUuid, sessionId }),

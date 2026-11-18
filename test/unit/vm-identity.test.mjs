@@ -190,6 +190,7 @@ test('outbound device_id is the CLI userID; a legacy machineID never goes out', 
       userID: cliUser,
     }),
   )
+  fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ userID: leftover }))
   const id = loadVmIdentity({
     vmId: 'vm-01',
     homeDir: home,
@@ -197,6 +198,7 @@ test('outbound device_id is the CLI userID; a legacy machineID never goes out', 
   })
   // Same value the CLI puts on its own requests and 1P events.
   assert.equal(id.deviceId, cliUser)
+  assert.equal(id.userId, cliUser)
   assert.notEqual(id.deviceId, leftover)
   assert.equal(JSON.parse(id.metadataUserId).device_id, cliUser)
   assert.equal(id.sessionId, 'sess-keep')
@@ -213,7 +215,33 @@ test('before the CLI has a userID the slot fingerprint stands in', () => {
     vm: { fingerprint: { device_id: 'dev-keep', session_id: 'sess-keep' } },
   })
   assert.equal(id.deviceId, crypto.createHash('sha256').update('dev-keep').digest('hex'))
+  assert.equal(id.userId, null)
   fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('remote CLI userID is authoritative after synchronization, even with stale host state', (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-node-id-'))
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  const observed = 'cc'.repeat(32)
+  const seed = 'aa'.repeat(32)
+  const vm = { node_id: 'node-test', fingerprint: { official_user_id: observed, device_id: seed } }
+  const exec = { vmId: 'vm-01', vm, homeDir: home }
+  for (const stale of [false, true]) {
+    if (stale) {
+      fs.mkdirSync(path.join(home, '.claude'))
+      fs.writeFileSync(path.join(home, '.claude', '.claude.json'), JSON.stringify({ userID: seed }))
+    }
+    const identity = loadVmIdentity(exec)
+    assert.equal(identity.userId, observed)
+    assert.equal(identity.deviceId, observed)
+    assert.equal(identity.fingerprint.device_id, observed)
+    assert.equal(JSON.parse(identity.metadataUserId).device_id, observed)
+  }
+  assert.equal(loadVmIdentity({ ...exec, vm: { ...vm, node_id: null } }).userId, seed)
+  assert.equal(
+    loadVmIdentity({ ...exec, vm: { ...vm, fingerprint: { device_id: seed, official_user_id: 'bad' } } }).deviceId,
+    seed,
+  )
 })
 
 test('64-hex device_id goes outbound as-is', () => {

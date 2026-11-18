@@ -1772,14 +1772,21 @@ test('reconcileCliHopRuntime reaps zombies and unpauses without CONNECT', async 
   fs.rmSync(root, { recursive: true, force: true })
 })
 
-test('reconcileCliHopRuntime accepts Claude onboarding inside a cluster-node slot once', async () => {
+test('reconcileCliHopRuntime accepts node onboarding and persists the effective CLI userID once', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-node-onboard-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(root, 'vms'))
+  const file = path.join(root, 'vms', 'vm-node-onboard.json')
+  const remoteUser = 'cd'.repeat(32)
   const calls = []
   const runDockerExec = async (args) => {
     calls.push(args)
-    if (args.includes('python3')) return { ok: true, stdout: 'patched /home/kincli/.claude/.claude.json' }
+    if (args.includes('python3'))
+      return { ok: true, stdout: `patched /home/kincli/.claude/.claude.json\nid=${remoteUser}\n` }
     return { ok: true }
   }
   const exec = {
+    projectRoot: root,
     vmId: 'vm-node-onboard',
     vm: {
       id: 'vm-node-onboard',
@@ -1789,6 +1796,10 @@ test('reconcileCliHopRuntime accepts Claude onboarding inside a cluster-node slo
       fingerprint: { device_id: 'AB'.repeat(32) },
     },
   }
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ ...exec.vm, fingerprint: { ...exec.vm.fingerprint, timezone: 'Asia/Tokyo' } }),
+  )
   const first = await reconcileCliHopRuntime(exec, { runDockerExec })
   assert.deepEqual(first.actions, ['reap_zombies', 'node_claude_setup'])
   const setup = calls.find((args) => args.includes('python3'))
@@ -1796,6 +1807,11 @@ test('reconcileCliHopRuntime accepts Claude onboarding inside a cluster-node slo
   assert.deepEqual(setup.slice(0, 4), ['exec', '-u', '10001:987', 'kin-vm-node-onboard'])
   assert.match(setup.at(-2), /hasCompletedOnboarding/)
   assert.equal(setup.at(-1), 'ab'.repeat(32))
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).fingerprint, {
+    device_id: 'AB'.repeat(32),
+    timezone: 'Asia/Tokyo',
+    official_user_id: remoteUser,
+  })
   const second = await reconcileCliHopRuntime(exec, { runDockerExec })
   assert.deepEqual(second.actions, ['reap_zombies'])
   assert.equal(calls.filter((args) => args.includes('python3')).length, 1)
@@ -1807,29 +1823,34 @@ test('node Claude setup seeds a missing userID without changing an existing ID o
   t.after(() => fs.rmSync(home, { recursive: true, force: true }))
   const nested = path.join(home, '.claude', '.claude.json')
   const legacy = path.join(home, '.claude.json')
-  const runSetup = (id) => {
+  const runSetup = (id, expected) => {
     const code = NODE_CLAUDE_SETUP_PY.replace('home = "/home/kincli"', `home = ${JSON.stringify(home)}`)
     const result = spawnSync('python3', ['-c', code, id], { encoding: 'utf8' })
     assert.equal(result.status, 0, result.stderr)
+    assert.deepEqual(
+      result.stdout.split('\n').filter((line) => line.startsWith('id=')),
+      [`id=${expected}`],
+    )
     return JSON.parse(fs.readFileSync(nested, 'utf8'))
   }
   fs.mkdirSync(path.dirname(nested))
   const first = 'aa'.repeat(32)
-  assert.equal(runSetup(first).userID, first)
+  assert.equal(runSetup(first, first).userID, first)
   assert.equal(fs.statSync(nested).mode & 0o777, 0o600)
   assert.equal(fs.existsSync(legacy), false)
   fs.chmodSync(nested, 0o640)
   fs.writeFileSync(nested, JSON.stringify({ userID: first, theme: 'light', custom: 'retained' }))
-  const saved = runSetup('bb'.repeat(32))
+  const saved = runSetup('bb'.repeat(32), first)
   assert.equal(saved.userID, first)
   assert.equal(saved.theme, 'light')
   assert.equal(saved.custom, 'retained')
   assert.equal(saved.hasCompletedOnboarding, true)
   assert.equal(saved.projects['/run/kin/work'].hasTrustDialogAccepted, true)
   assert.equal(fs.statSync(nested).mode & 0o777, 0o640)
+  assert.equal(runSetup('', first).userID, first, 'unchanged config still reports the ID')
   fs.unlinkSync(nested)
   fs.writeFileSync(legacy, JSON.stringify({ userID: first }))
-  assert.equal(runSetup('bb'.repeat(32)).userID, first)
+  assert.equal(runSetup('bb'.repeat(32), first).userID, first)
 })
 
 test('scheduleWrapRecycle bounces once then cools down', async () => {

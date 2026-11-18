@@ -5,6 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { GUARD_SCRIPT, createCliNodeGuard, isCliNodeGuardTarget } from '../../src/lib/vm/cli-node-guard.mjs'
+import { loadVmIdentity } from '../../src/lib/identity/vm-identity.mjs'
 
 // Real processes stand in for slot CLIs; a fake proc root carries their
 // cmdline/environ so the guard's own shell policy decides who gets SIGKILL.
@@ -123,18 +124,31 @@ test('skips stopped / dead slots instead of exec-ing into a missing container', 
   assert.deepEqual(warned, [])
 })
 
-test('re-asserts Claude onboarding in a cluster-node Docker slot, at most once a minute', async () => {
+test('re-asserts Claude onboarding and mirrors the running Docker slot userID, at most once a minute', async (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-guard-device-'))
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(projectRoot, 'vms'))
   const execed = []
+  const captured = []
   const warned = []
   const node = {
     id: 'vm-node-01',
     status: 'running',
     node_id: 'node-test',
     runtime: { container: 'kin-vm-node-01', user: '10001:987' },
+    fingerprint: { device_id: 'ab'.repeat(32) },
   }
+  const file = path.join(projectRoot, 'vms', `${node.id}.json`)
+  fs.writeFileSync(file, JSON.stringify(node))
+  const remoteId = 'cd'.repeat(32)
   const guard = createCliNodeGuard({
+    projectRoot,
     listTargets: () => [node, { id: 'vm-local-01', status: 'running', runtime: { container: 'kin-vm-local-01' } }],
     exec: async (_connect, container, Cmd, opts) => execed.push({ container, Cmd, opts }),
+    capture: async (_connect, container, Cmd, opts) => {
+      captured.push({ container, Cmd, opts })
+      return { stdout: `id=${remoteId}\n`, exitCode: 0 }
+    },
     logger: { warn: (m) => warned.push(m) },
     hostFor: (vm) =>
       vm.node_id
@@ -142,12 +156,21 @@ test('re-asserts Claude onboarding in a cluster-node Docker slot, at most once a
         : { bakedKernel: false, native: false, dockerApi: () => ({}), execUser: () => '10000:10000' },
   })
   await guard.tick()
-  const setup = execed.filter((e) => e.Cmd[0] === 'python3')
-  assert.equal(setup.length, 1, JSON.stringify({ execed, warned }))
-  assert.equal(setup[0].container, 'kin-vm-node-01')
-  assert.equal(setup[0].opts.user, '10001:987')
-  assert.match(setup[0].Cmd.at(-1), /hasCompletedOnboarding/)
+  assert.equal(captured.length, 1, JSON.stringify({ execed, warned }))
+  assert.equal(captured[0].container, 'kin-vm-node-01')
+  assert.equal(captured[0].opts.user, '10001:987')
+  assert.match(captured[0].Cmd.at(-2), /hasCompletedOnboarding/)
+  assert.equal(captured[0].Cmd.at(-1), node.fingerprint.device_id)
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8'))
+  assert.equal(saved.fingerprint.official_user_id, remoteId)
+  const identity = loadVmIdentity({
+    vmId: node.id,
+    vm: saved,
+    homeDir: path.join(projectRoot, 'vms', node.id, 'cli-home'),
+  })
+  assert.equal(identity.userId, remoteId)
+  assert.equal(JSON.parse(identity.metadataUserId).device_id, remoteId)
   await guard.tick()
-  assert.equal(execed.filter((e) => e.Cmd[0] === 'python3').length, 1)
+  assert.equal(captured.length, 1)
   assert.equal(execed.filter((e) => e.Cmd[0] === '/bin/sh').length, 4)
 })
