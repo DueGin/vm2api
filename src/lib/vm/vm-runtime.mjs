@@ -11,7 +11,7 @@ import path from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { slotHost } from './slot-host.mjs'
 import { maxRequestBytes, readRoutingConfigFile, streamIdleTimeoutMs } from '../core/config.mjs'
-import { US_TIMEZONES, validTimezone } from '../core/timezone.mjs'
+import { US_TIMEZONES } from '../core/timezone.mjs'
 import { runtimeKind, isKvmRuntime, RUNTIME_KVM } from './runtime-kind.mjs'
 import { isValidVmId } from './vm-file.mjs'
 import { isCodexVm } from './vm-kind.mjs'
@@ -25,7 +25,7 @@ import {
 } from './crag-license.mjs'
 import { withCragRuntimeAdmission } from './slot-runtime-admission.mjs'
 import { CRAG_HOST_MOUNT, cragSubscriptionPublicDirectory } from './crag-subscription-paths.mjs'
-import { isNativeNodeVm } from '../cluster/placement.mjs'
+import { ensurePlacementSlotTimezone, isNativeNodeVm } from '../cluster/placement.mjs'
 import { workerPaths as transportWorkerPaths } from '../transport/go-worker-client.mjs'
 import {
   assertCliHopAllowed,
@@ -728,22 +728,24 @@ async function reloadSlotWorkerAdmitted(vm, projectRoot, { routing }) {
   }
   const paths = workerPaths(projectRoot, vm.id, vm)
   const name = containerName(vm.id)
+  const zone = await ensurePlacementSlotTimezone(vm, projectRoot)
+  const existing = inspectContainer(name)
+  if (!zone && !existing) return slotTimezoneUnknown(vm)
   let worker
   try {
     if (!isLocalEgressProxy(vm.proxy) && vm.proxy_required !== false && !workerProxyUrl(vm))
       throw new Error('slot SOCKS5 proxy is required')
-    worker = writeWorkerFiles(vm, projectRoot, { routing })
+    worker = writeWorkerFiles(vm, projectRoot, { routing, writeKernel: Boolean(zone) })
   } catch (error) {
     if (!fs.existsSync(paths.config) || !fs.existsSync(paths.token)) {
       return { ok: false, error: String(error.message || error) }
     }
     worker = paths
   }
-  const existing = inspectContainer(name)
   if (!existing) return startVmRuntimeAdmitted(vm, projectRoot, { recreate: false, routing })
   // Before the KVM branch so a runner on the wrong kin-eg-* is recreated too.
   // Docker restart keeps HostConfig, so a pre-sandbox CRAG v2 container stays EPERM until rm.
-  if (slotWorkerNeedsRecreate(existing, vm, paths) || nativeSlotSandboxNeedsRecreate(existing, vm, routing)) {
+  if (zone && (slotWorkerNeedsRecreate(existing, vm, paths) || nativeSlotSandboxNeedsRecreate(existing, vm, routing))) {
     return startVmRuntimeAdmitted(vm, projectRoot, { recreate: true, routing })
   }
   // A stopped local Docker slot with a host permit may still need the read-only entitlement bind.
@@ -832,7 +834,7 @@ export function resolveSlotRouting(projectRoot, routing) {
   return readProjectRouting(projectRoot) || {}
 }
 
-export function writeWorkerFiles(vm, projectRoot, { transparent, routing } = {}) {
+export function writeWorkerFiles(vm, projectRoot, { transparent, routing, writeKernel = true } = {}) {
   assertProxyAllowed(vm.proxy)
   const paths = workerPaths(projectRoot, vm.id, vm)
   const uid = runtimeUidNum(vm)
@@ -904,14 +906,16 @@ export function writeWorkerFiles(vm, projectRoot, { transparent, routing } = {})
   shareRuntimeFile(paths.config)
   const allowed = assertCliHopAllowed(vm, resolvedRouting)
   if (!allowed.ok) throw new Error(allowed.error)
-  const kernel = writeKernelConfig(projectRoot, vm, {
-    token,
-    proxyUrl,
-    proxyRequired: vm.proxy_required !== false,
-    officialCcInference: resolveOfficialCcInference(vm, resolvedRouting),
-    timezone: vm.timezone || '',
-    routing: resolvedRouting,
-  })
+  const kernel = writeKernel
+    ? writeKernelConfig(projectRoot, vm, {
+        token,
+        proxyUrl,
+        proxyRequired: vm.proxy_required !== false,
+        officialCcInference: resolveOfficialCcInference(vm, resolvedRouting),
+        timezone: vm.timezone || '',
+        routing: resolvedRouting,
+      })
+    : null
   // Slot uid is added via --group-add. These files stay in the control-plane
   // group; chownSlotRuntimeFile would move a successful chown back to KIN_VM_GID.
   try {
@@ -1280,6 +1284,25 @@ export function inspectInstalledCragEntry(projectRoot, vm) {
   return failure
 }
 
+function resumeLocalSlotWithoutTimezone(vm, projectRoot, routing) {
+  const name = containerName(vm.id)
+  const existing = inspectContainer(name)
+  if (!existing) return slotTimezoneUnknown(vm)
+  if (!existing.running) {
+    const result = sh(['docker', 'start', name], { timeout: 60_000 })
+    if (!result.ok) return { ok: false, error: result.stderr || 'docker start failed' }
+    const chownErr = applyKvmBindChown(name, vm)
+    if (chownErr) return chownErr
+  }
+  const paths = workerPaths(projectRoot, vm.id, vm)
+  runtimePatch(vm, existing.running ? existing : inspectContainer(name), {
+    ...workerRuntimeExtra(paths),
+    routing,
+    ...(isKvmRuntime(vm) ? { accel: vm.runtime?.accel } : {}),
+  })
+  return { ok: true, action: existing.running ? 'already-running' : 'started', runtime: vm.runtime }
+}
+
 async function startVmRuntimeAdmitted(
   vm,
   projectRoot,
@@ -1296,6 +1319,10 @@ async function startVmRuntimeAdmitted(
   if (licensed.license?.scope === 'kernel') await projectCragUniversalVm(projectRoot, vm)
   const kvm = isKvmRuntime(vm)
   if (!kvm) slotDockerCpus(vm) // reject corrupt persisted quotas before any lifecycle changes
+  const zone = await ensurePlacementSlotTimezone(vm, projectRoot)
+  if (!zone) {
+    return recreate ? slotTimezoneUnknown(vm) : resumeLocalSlotWithoutTimezone(vm, projectRoot, resolvedRouting)
+  }
   let accelOpt = accel
   if (kvm && accelOpt !== 'kvm' && accelOpt !== 'tcg') {
     accelOpt = vm.runtime?.accel
@@ -1310,8 +1337,6 @@ async function startVmRuntimeAdmitted(
   let host = String(vm.fingerprint?.hostname || '').trim() || slotName
   const kernel = vm.kernel && OS_CATALOG[vm.kernel] ? vm.kernel : 'ubuntu-24.04'
   vm.kernel = kernel
-  const zone = validTimezone(vm.timezone)
-  if (zone) vm.timezone = zone
   vm.locale = vm.locale || STANDARD_LOCALE
   const mem = slotMemory(vm, resolvedRouting)
   const image = kvm ? kvmImageForKernel(kernel) : imageForKernel(kernel)
@@ -1435,9 +1460,6 @@ async function startVmRuntimeAdmitted(
   if (!shouldPublishComputer(existing)) {
     return { ok: false, error: 'refusing to publish a new computer onto an existing container' }
   }
-  // TZ is baked into the container here. Without a zone read from the exit (or
-  // set by hand) it would come up on UTC, which the exit IP contradicts.
-  if (!zone) return slotTimezoneUnknown(vm)
   let computer
   try {
     computer = ensureSlotComputer(projectRoot, vm)

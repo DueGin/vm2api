@@ -190,6 +190,7 @@ test('old native slots resume loaded jobs or saved plists without publishing a n
   let state = 'running'
   let hasPlist = false
   const calls = []
+  const published = []
   const [start, reload] = vmContext.runInNewContext(
     `${lifecycle.replaceAll('export ', '')}; [startNativeSlot, reloadNativeSlot]`,
     {
@@ -205,7 +206,9 @@ test('old native slots resume loaded jobs or saved plists without publishing a n
       nativeServiceStatus: async () => ({ state }),
       readRemoteFileNoFollow: async () => (hasPlist ? Buffer.from('deployed plist') : null),
       clusterManager: () => ({ ensureSlotRelays: async () => ({}) }),
-      reconcileSlotCredentials: async () => {},
+      writeWorkerFiles: (_vm, _root, options) => published.push(['write', options.writeKernel]),
+      pushSlotFiles: async (_vm, _dir, sets) => published.push(['push', ...sets]),
+      reconcileSlotCredentials: async (_vm, _dir, _session, options) => published.push(['seal', options.seal]),
       configureSlot: async () => assert.fail('must not configure a new service without a timezone'),
       applyNativeRuntime: () => {},
       kickstart: async (_session, _domain, _label, { kill }) => calls.push(kill ? 'restart' : 'kickstart'),
@@ -222,6 +225,14 @@ test('old native slots resume loaded jobs or saved plists without publishing a n
   assert.equal((await start(vm, '/fixture')).action, 'started')
   assert.equal((await start(vm, '/fixture', { recreate: true })).code, 'slot_timezone_unknown')
   assert.deepEqual(calls, ['restart', 'kickstart', '/remote/vms/vm-01/launchd/com.vm2api.slot.vm-01.kernel.plist'])
+  assert.deepEqual(
+    published,
+    Array.from({ length: 4 }, () => [
+      ['write', false],
+      ['push', 'worker'],
+      ['seal', true],
+    ]).flat(),
+  )
 })
 
 test('only Claude slots on the node network exit can run natively', () => {

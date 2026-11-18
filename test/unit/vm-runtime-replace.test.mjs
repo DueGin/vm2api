@@ -22,9 +22,70 @@ import {
 } from '../../src/lib/vm/vm-runtime.mjs'
 import { slotNetworkForVm } from '../../src/lib/vm/egress.mjs'
 import { kernelCpuCommand } from '../../src/lib/vm/kernel-cpu.mjs'
+import { bindPlacement, unbindPlacement } from '../../src/lib/cluster/placement.mjs'
+import { evaluateSlotGate } from '../../src/lib/pool/schedule-eligibility.mjs'
+import { getVm } from '../../src/lib/vm/vm-registry.mjs'
 
 const running = { running: true, networkMode: 'host', image: 'kin-os/ubuntu:24.04' }
 const stopped = { running: false, networkMode: 'host', image: 'kin-os/ubuntu:24.04' }
+
+test('local Docker and KVM persist missing exit timezone state without replacing the existing container', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-local-tz-'))
+  const calls = path.join(root, 'docker.log')
+  const oldPath = process.env.PATH
+  t.after(() => {
+    unbindPlacement()
+    process.env.PATH = oldPath
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+  fs.mkdirSync(path.join(root, 'vms'))
+  fs.writeFileSync(
+    path.join(root, 'docker'),
+    `#!/bin/sh
+printf '%s\n' "$1" >> '${calls}'
+case "$1" in
+  inspect)
+    case "$*" in *kin-03*) exit 1;; esac
+    printf '%s\n' 'false|0|kin-eg-px-fixture|||fixture|||false|unless-stopped|[]|false';;
+  start|exec) exit 0;;
+  *) exit 1;;
+esac
+`,
+    { mode: 0o755 },
+  )
+  process.env.PATH = `${root}:${oldPath}`
+  let timezone = ''
+  bindPlacement({
+    projectRoot: root,
+    proxyPool: { proxyTimezone: () => timezone, detectGeo: async () => ({ ok: false, error: 'geo_timeout' }) },
+  })
+  for (const [id, type] of [
+    ['vm-01', 'docker'],
+    ['vm-02', 'kvm'],
+    ['vm-03', 'docker'],
+  ]) {
+    const vm = { id, proxy: { id: 'px-fixture' }, runtime: { type, accel: 'kvm' } }
+    fs.writeFileSync(path.join(root, 'vms', `${id}.json`), JSON.stringify(vm))
+    const boot = await startVmRuntime(vm, root, { routing: {} })
+    if (id === 'vm-03') assert.equal(boot.code, 'slot_timezone_unknown')
+    else {
+      assert.equal(boot.action, 'started')
+      assert.equal((await startVmRuntime(vm, root, { recreate: true, routing: {} })).code, 'slot_timezone_unknown')
+    }
+    assert.equal(getVm(root, id).exit_timezone.status, 'unknown')
+    assert.deepEqual(evaluateSlotGate(getVm(root, id)), { ok: false, reason: 'exit_timezone_unknown' })
+  }
+  const commands = fs.readFileSync(calls, 'utf8').trim().split('\n')
+  assert.equal(commands.filter((command) => command === 'start').length, 2)
+  assert.ok(commands.every((command) => ['inspect', 'start', 'exec'].includes(command)))
+
+  timezone = 'Asia/Tokyo'
+  const recovered = getVm(root, 'vm-03')
+  await startVmRuntime(recovered, root, { routing: {} })
+  assert.equal(recovered.timezone, timezone)
+  assert.equal(getVm(root, recovered.id).exit_timezone.status, 'aligned')
+  assert.equal(getVm(root, recovered.id).timezone, timezone)
+})
 
 test('running slot is never replaced unless recreate is explicit', () => {
   assert.equal(
@@ -357,6 +418,7 @@ test('reload writes transparent egress for local exit without a SOCKS url', asyn
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-reload-local-'))
   const vm = {
     id: 'vm-09',
+    timezone: 'Asia/Tokyo',
     proxy_cli_enabled: true,
     proxy: { id: 'px-local', scheme: 'local', host: 'local', port: 0, url: null },
   }

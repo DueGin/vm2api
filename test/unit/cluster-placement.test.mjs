@@ -87,6 +87,10 @@ function fakeNode(files = new Map()) {
     ok(cb)
   }
   sftp.fchown = (_h, _u, _g, cb) => ok(cb)
+  sftp.ext_openssh_lsetstat = (file, attrs, cb) => {
+    modes.set(file, attrs.mode)
+    ok(cb)
+  }
   sftp.close = (h, cb) => {
     const e = handles.get(h.toString())
     files.set(e.p, Buffer.concat(e.chunks))
@@ -457,6 +461,25 @@ test('start reconcile never overwrites a remote credential the slot already rota
   const local = path.join(slotDir, 'cli-home', '.claude', 'credentials.json')
   assert.equal(fs.readFileSync(local, 'utf8'), '{"rt":"rotated"}')
   assert.equal(fs.statSync(local).mode & 0o777, 0o444, 'local seal survives the pull')
+})
+
+test('legacy worker-only sync preserves kernel config and seals the authoritative remote credential in place', async () => {
+  const node = fakeNode()
+  const slotDir = localSlot('{"rt":"stale"}')
+  const remoteRun = `${node.session.host.root}/vms/${vm.id}/run`
+  node.files.set(node.remoteCred, Buffer.from('{"rt":"rotated"}'))
+  node.modes.set(node.remoteCred, 0o600)
+  node.files.set(`${remoteRun}/kernel.json`, Buffer.from('{"timezone":"Asia/Tokyo"}'))
+  fs.mkdirSync(path.join(slotDir, 'run'))
+  fs.writeFileSync(path.join(slotDir, 'run', 'kernel.json'), '{"timezone":""}')
+  fs.writeFileSync(path.join(slotDir, 'run', 'worker.json'), '{"cli_version":"2.1.321"}')
+  await pushSlotFiles(vm, slotDir, ['worker'], node.session)
+  await reconcileSlotCredentials(vm, slotDir, node.session, { seal: true })
+  assert.equal(node.files.get(`${remoteRun}/kernel.json`).toString(), '{"timezone":"Asia/Tokyo"}')
+  assert.equal(node.files.get(`${remoteRun}/worker.json`).toString(), '{"cli_version":"2.1.321"}')
+  assert.equal(node.files.get(node.remoteCred).toString(), '{"rt":"rotated"}')
+  assert.equal(node.modes.get(node.remoteCred), 0o444)
+  assert.ok(!node.published.includes(node.remoteCred))
 })
 
 test('start reconcile seeds an empty node dir from the local credential', async () => {

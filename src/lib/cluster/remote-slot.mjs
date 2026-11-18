@@ -1176,7 +1176,9 @@ async function resumeRemoteSlotWithoutTimezone(vm, projectRoot, routing, { reloa
   if (isKvmRuntime(vm)) {
     ensureKvmMachineRecord(vm, { projectRoot, containerEnv: dockerEnvMap(existing.Config?.Env), persist: true })
   }
-  await reconcileSlotCredentials(vm, slotDir, session)
+  writeWorkerFiles(vm, projectRoot, { transparent: true, routing, writeKernel: false })
+  await pushSlotFiles(vm, slotDir, ['worker'], session)
+  await reconcileSlotCredentials(vm, slotDir, session, { seal: true })
   if (reload || !running || existing.State?.Restarting) {
     if (isKvmRuntime(vm) && running && !existing.State?.Restarting) {
       await restartRemoteKvmKernel(vm, session, name)

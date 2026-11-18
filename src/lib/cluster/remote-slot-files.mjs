@@ -51,6 +51,7 @@ const SEED_SETTINGS_FILES = Object.freeze([
 ])
 export const SLOT_FILE_SETS = Object.freeze({
   run: ['run/kernel.json', 'run/worker.json', 'run/internal.token'],
+  worker: ['run/worker.json', 'run/internal.token'],
   seed: [...SEED_SETTINGS_FILES, 'machine-id'],
   // Policy publication must not overwrite node-owned identity or OAuth files.
   seed_settings: SEED_SETTINGS_FILES,
@@ -414,10 +415,29 @@ export async function pullSlotCredentials(vm, slotDir, session = null) {
  * Start/reload reconcile: a remote credential wins (it may be rotated); only a
  * slot whose node dir has none yet gets the local one.
  */
-export async function reconcileSlotCredentials(vm, slotDir, session) {
+export async function reconcileSlotCredentials(vm, slotDir, session, { seal = false } = {}) {
   const pulled = await pullSlotCredentials(vm, slotDir, session)
-  if (pulled.reason !== 'remote_missing') return pulled
+  if (pulled.reason !== 'remote_missing') {
+    if (seal) await sealRemoteSlotCredentials(vm, session)
+    return pulled
+  }
   return pushSlotCredentials(vm, slotDir, session)
+}
+
+async function sealRemoteSlotCredentials(vm, session) {
+  const file = `${remoteSlotDir(session.host, vm.id)}/${remoteSlotPath(CREDENTIALS)}`
+  const sftp = await openSftp(session.client)
+  await new Promise((resolve, reject) => {
+    try {
+      sftp.ext_openssh_lsetstat(file, { mode: CREDENTIAL_FILE_MODE }, (error) => {
+        if (!error || error.code === 2 || error.code === 8) resolve()
+        else reject(error)
+      })
+    } catch (error) {
+      if (error.message === 'Server does not support this extended request') resolve()
+      else reject(error)
+    }
+  })
 }
 
 /** Point the node official CLI at worker credentials.json without rewriting its bytes. */

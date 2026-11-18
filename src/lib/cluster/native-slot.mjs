@@ -367,7 +367,7 @@ async function configureSlot(vm, projectRoot, routing) {
   return { nodeId, session, p, digest: payload.digest, domain, relays, slotDir, plists, changed }
 }
 
-async function resumeNativeSlotWithoutTimezone(vm, projectRoot, { reload }) {
+async function resumeNativeSlotWithoutTimezone(vm, projectRoot, { reload, routing }) {
   const nodeId = vmNodeId(vm)
   const session = await nativeSession(vm)
   const domain = await launchdDomain(session)
@@ -381,7 +381,9 @@ async function resumeNativeSlotWithoutTimezone(vm, projectRoot, { reload }) {
   }
   const slotDir = path.join(projectRoot, 'vms', vm.id)
   const relays = await clusterManager().ensureSlotRelays(nodeId, vm.id)
-  await reconcileSlotCredentials(vm, slotDir, session)
+  writeWorkerFiles(vm, projectRoot, { transparent: true, routing, writeKernel: false })
+  await pushSlotFiles(vm, slotDir, ['worker'], session)
+  await reconcileSlotCredentials(vm, slotDir, session, { seal: true })
   if (before.state === 'missing') await bootstrap(session, domain, plist)
   else if (reload || before.state !== 'running') await kickstart(session, domain, label, { kill: reload })
   const kernel = await nativeServiceStatus(session, domain, label)
@@ -395,7 +397,9 @@ async function runNativeSlot(vm, projectRoot, { recreate = false, routing, reloa
     const blocked = nativeUnsupported(vm, routing)
     if (blocked) return blocked
     if (!(await ensurePlacementSlotTimezone(vm, projectRoot))) {
-      return recreate ? slotTimezoneUnknown(vm) : await resumeNativeSlotWithoutTimezone(vm, projectRoot, { reload })
+      return recreate
+        ? slotTimezoneUnknown(vm)
+        : await resumeNativeSlotWithoutTimezone(vm, projectRoot, { reload, routing })
     }
     const config = await configureSlot(vm, projectRoot, routing)
     const before = await nativeServiceStatus(config.session, config.domain, config.plists.kernel.label)

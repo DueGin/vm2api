@@ -167,9 +167,14 @@ function fixture({
       if (removeFails) throw new Error('remove denied')
       info = null
     },
-    writeWorkerFiles: () => calls.push('files'),
+    writeWorkerFiles: (_vm, _root, options) => calls.push(options.writeKernel === false ? 'worker-only' : 'files'),
     ensureGuestMachineIdFile: () => {},
-    pushSlotFiles: async () => {},
+    pushSlotFiles: async (_vm, _dir, sets) => {
+      if (sets.includes('worker')) {
+        assert.equal(sets.length, 1)
+        calls.push('push-worker')
+      }
+    },
     migrateClaudeDir: async () => {},
     runRemote: async (_client, command) => {
       if (command.startsWith('docker ')) calls.push('restart-guest-kernel')
@@ -177,7 +182,9 @@ function fixture({
     slotExecArgv: () => ['exec', 'fixture'],
     kvmCragAppArmorCommand: () => [],
     shellQuote: (s) => s,
-    reconcileSlotCredentials: async () => {},
+    reconcileSlotCredentials: async (_vm, _dir, _session, options) => {
+      if (options?.seal) calls.push('seal-credentials')
+    },
     releaseRemoteEgress: async () => {},
     createContainerRaw: async () => {
       calls.push('create')
@@ -222,7 +229,7 @@ test('old remote slot with unknown timezone starts the existing container even i
   const f = fixture({ running: false, mismatch: true })
   f.target.timezone = null
   assert.equal((await f.boot()).action, 'started')
-  assert.deepEqual(f.calls, ['start', 'runtime'])
+  assert.deepEqual(f.calls, ['worker-only', 'push-worker', 'seal-credentials', 'start', 'runtime'])
 })
 
 for (const kind of ['docker', 'kvm']) {
@@ -230,7 +237,13 @@ for (const kind of ['docker', 'kvm']) {
     const f = fixture({ kind, mismatch: true })
     f.target.timezone = null
     assert.equal((await f.reload()).action, 'reloaded')
-    assert.deepEqual(f.calls, [kind === 'kvm' ? 'restart-guest-kernel' : 'restart', 'runtime'])
+    assert.deepEqual(f.calls, [
+      'worker-only',
+      'push-worker',
+      'seal-credentials',
+      kind === 'kvm' ? 'restart-guest-kernel' : 'restart',
+      'runtime',
+    ])
   })
 }
 
