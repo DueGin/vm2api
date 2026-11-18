@@ -454,13 +454,43 @@ test('failed atomic link publication leaves the old name intact and can retry', 
 test('start reconcile never overwrites a remote credential the slot already rotated', async () => {
   const node = fakeNode()
   node.files.set(node.remoteCred, Buffer.from('{"rt":"rotated"}'))
+  node.modes.set(node.remoteCred, 0o600)
   const slotDir = localSlot('{"rt":"stale"}')
-  const r = await reconcileSlotCredentials(vm, slotDir, node.session)
+  const r = await reconcileSlotCredentials(vm, slotDir, node.session, { seal: true })
   assert.equal(r.pulled, true)
+  assert.deepEqual(r.seal, { sealed: true })
   assert.equal(node.files.get(node.remoteCred).toString(), '{"rt":"rotated"}', 'remote copy must stay authoritative')
+  assert.equal(node.modes.get(node.remoteCred), 0o444)
   const local = path.join(slotDir, 'cli-home', '.claude', 'credentials.json')
   assert.equal(fs.readFileSync(local, 'utf8'), '{"rt":"rotated"}')
   assert.equal(fs.statSync(local).mode & 0o777, 0o444, 'local seal survives the pull')
+})
+
+test('failed optional remote seal does not fail credential reconciliation', async (t) => {
+  for (const failure of ['different extension error', 'sftp status error']) {
+    await t.test(failure, async (t) => {
+      const node = fakeNode()
+      const slotDir = localSlot('{"rt":"stale"}')
+      t.after(() => fs.rmSync(slotDir, { recursive: true, force: true }))
+      node.files.set(node.remoteCred, Buffer.from('{"rt":"rotated"}'))
+      node.modes.set(node.remoteCred, 0o600)
+      const sftp = await new Promise((resolve) => node.session.client.sftp((_, value) => resolve(value)))
+      sftp.ext_openssh_lsetstat = (_file, _attrs, cb) => {
+        if (failure === 'different extension error') throw new Error('Unsupported extension on this server')
+        setImmediate(() => cb(Object.assign(new Error('Permission denied'), { code: 3 })))
+      }
+      const result = await reconcileSlotCredentials(vm, slotDir, node.session, { seal: true })
+      assert.equal(result.pulled, true)
+      assert.deepEqual(result.seal, { sealed: false, reason: 'seal_failed' })
+      assert.equal(node.modes.get(node.remoteCred), 0o600)
+      assert.equal(node.files.get(node.remoteCred).toString(), '{"rt":"rotated"}')
+      assert.equal(
+        fs.readFileSync(path.join(slotDir, 'cli-home', '.claude', 'credentials.json'), 'utf8'),
+        '{"rt":"rotated"}',
+      )
+      assert.ok(!node.published.includes(node.remoteCred))
+    })
+  }
 })
 
 test('legacy worker-only sync preserves kernel config and seals the authoritative remote credential in place', async () => {

@@ -208,7 +208,10 @@ test('old native slots resume loaded jobs or saved plists without publishing a n
       clusterManager: () => ({ ensureSlotRelays: async () => ({}) }),
       writeWorkerFiles: (_vm, _root, options) => published.push(['write', options.writeKernel]),
       pushSlotFiles: async (_vm, _dir, sets) => published.push(['push', ...sets]),
-      reconcileSlotCredentials: async (_vm, _dir, _session, options) => published.push(['seal', options.seal]),
+      reconcileSlotCredentials: async (_vm, _dir, _session, options) => {
+        published.push(['seal', options.seal])
+        return { seal: { sealed: false, reason: 'seal_failed' } }
+      },
       configureSlot: async () => assert.fail('must not configure a new service without a timezone'),
       applyNativeRuntime: () => {},
       kickstart: async (_session, _domain, _label, { kill }) => calls.push(kill ? 'restart' : 'kickstart'),

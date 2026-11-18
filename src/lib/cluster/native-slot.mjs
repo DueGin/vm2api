@@ -361,7 +361,7 @@ async function configureSlot(vm, projectRoot, routing) {
   writeWorkerFiles(vm, projectRoot, { transparent: true, routing })
   ensureGuestMachineIdFile(projectRoot, vm)
   await pushSlotFiles(vm, slotDir, ['run', 'seed'], session)
-  await reconcileSlotCredentials(vm, slotDir, session)
+  await reconcileSlotCredentials(vm, slotDir, session, { seal: true })
   const plists = nativeServicePlists(vm, p)
   const changed = await publishPlists(session, plists)
   return { nodeId, session, p, digest: payload.digest, domain, relays, slotDir, plists, changed }

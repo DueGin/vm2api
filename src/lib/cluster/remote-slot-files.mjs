@@ -418,26 +418,34 @@ export async function pullSlotCredentials(vm, slotDir, session = null) {
 export async function reconcileSlotCredentials(vm, slotDir, session, { seal = false } = {}) {
   const pulled = await pullSlotCredentials(vm, slotDir, session)
   if (pulled.reason !== 'remote_missing') {
-    if (seal) await sealRemoteSlotCredentials(vm, session)
+    if (seal) {
+      try {
+        return { ...pulled, seal: await sealRemoteSlotCredentials(vm, session) }
+      } catch {
+        return { ...pulled, seal: { sealed: false, reason: 'seal_failed' } }
+      }
+    }
     return pulled
   }
   return pushSlotCredentials(vm, slotDir, session)
 }
 
 async function sealRemoteSlotCredentials(vm, session) {
-  const file = `${remoteSlotDir(session.host, vm.id)}/${remoteSlotPath(CREDENTIALS)}`
-  const sftp = await openSftp(session.client)
-  await new Promise((resolve, reject) => {
-    try {
+  try {
+    const file = `${remoteSlotDir(session.host, vm.id)}/${remoteSlotPath(CREDENTIALS)}`
+    const sftp = await openSftp(session.client)
+    await new Promise((resolve, reject) => {
       sftp.ext_openssh_lsetstat(file, { mode: CREDENTIAL_FILE_MODE }, (error) => {
-        if (!error || error.code === 2 || error.code === 8) resolve()
-        else reject(error)
+        if (error) reject(error)
+        else resolve()
       })
-    } catch (error) {
-      if (error.message === 'Server does not support this extended request') resolve()
-      else reject(error)
-    }
-  })
+    })
+    return { sealed: true }
+  } catch (error) {
+    if (error?.code === 2) return { sealed: false, reason: 'remote_missing' }
+    if (error?.code === 8) return { sealed: false, reason: 'unsupported' }
+    return { sealed: false, reason: 'seal_failed' }
+  }
 }
 
 /** Point the node official CLI at worker credentials.json without rewriting its bytes. */

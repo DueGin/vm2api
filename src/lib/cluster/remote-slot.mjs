@@ -1287,7 +1287,7 @@ async function startRemoteSlotAdmitted(vm, projectRoot, { recreate, routing, pin
     }
     if (matches && existing.State?.Running) {
       if (subscription) await publishClusterSubscription(projectRoot, vm, session)
-      await reconcileSlotCredentials(vm, slotDir, session)
+      await reconcileSlotCredentials(vm, slotDir, session, { seal: true })
       applyRuntime(vm, { ...common, info: existing })
       return { ok: true, action: 'already-running', runtime: vm.runtime }
     }
@@ -1309,7 +1309,7 @@ async function startRemoteSlotAdmitted(vm, projectRoot, { recreate, routing, pin
         `umask 077 && mkdir -p ${shellQuote(`${remoteDir}/kvm`)} && chmod 700 ${shellQuote(`${remoteDir}/kvm`)}`,
       )
     }
-    await reconcileSlotCredentials(vm, slotDir, session)
+    await reconcileSlotCredentials(vm, slotDir, session, { seal: true })
     if (previousNetwork && previousNetwork !== eg.network) await releaseRemoteEgress(session, previousNetwork)
     let action = 'started'
     if (!existing) {
@@ -1376,7 +1376,7 @@ async function reloadRemoteSlotAdmitted(vm, projectRoot, { routing }) {
     writeWorkerFiles(vm, projectRoot, { transparent: true, routing })
     await pushSlotFiles(vm, slotDir, ['run', 'seed'], session)
     if (subscription) await publishClusterSubscription(projectRoot, vm, session, { force: true })
-    await reconcileSlotCredentials(vm, slotDir, session)
+    await reconcileSlotCredentials(vm, slotDir, session, { seal: true })
     const running = !!existing.State?.Running
     if (isKvmRuntime(vm) && running) {
       await chownRemoteKvmBinds(session, name, vm)

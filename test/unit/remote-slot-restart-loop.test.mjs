@@ -100,6 +100,7 @@ function fixture({
   cragReady = false,
   subscription = false,
   cpuWrapped = false,
+  sealFails = false,
 } = {}) {
   const calls = []
   const target = {
@@ -184,6 +185,7 @@ function fixture({
     shellQuote: (s) => s,
     reconcileSlotCredentials: async (_vm, _dir, _session, options) => {
       if (options?.seal) calls.push('seal-credentials')
+      if (options?.seal && sealFails) return { seal: { sealed: false, reason: 'seal_failed' } }
     },
     releaseRemoteEgress: async () => {},
     createContainerRaw: async () => {
@@ -226,7 +228,7 @@ function fixture({
 }
 
 test('old remote slot with unknown timezone starts the existing container even if image metadata differs', async () => {
-  const f = fixture({ running: false, mismatch: true })
+  const f = fixture({ running: false, mismatch: true, sealFails: true })
   f.target.timezone = null
   assert.equal((await f.boot()).action, 'started')
   assert.deepEqual(f.calls, ['worker-only', 'push-worker', 'seal-credentials', 'start', 'runtime'])
@@ -264,7 +266,15 @@ test('a subscribed cluster Docker slot replaces the old container before startin
   f.target.dataplane = 'crag'
   f.target.crag_kernel_version = 'v2'
   assert.equal((await f.boot()).action, 'created')
-  assert.deepEqual(f.calls, ['remove', 'files', 'publish-subscription', 'create', 'start', 'runtime'])
+  assert.deepEqual(f.calls, [
+    'remove',
+    'files',
+    'publish-subscription',
+    'seal-credentials',
+    'create',
+    'start',
+    'runtime',
+  ])
   const body = slotContainerBody(f.target, {
     image: 'fixture',
     network: 'fixture',
@@ -282,7 +292,7 @@ test('an already running CRAG slot is not bounced to disable legacy Docker autor
   const f = fixture({ cragReady: true })
   f.target.dataplane = 'crag'
   assert.equal((await f.boot()).action, 'already-running')
-  assert.deepEqual(f.calls, ['disable-autorestart', 'runtime'])
+  assert.deepEqual(f.calls, ['disable-autorestart', 'seal-credentials', 'runtime'])
 })
 
 for (const kind of ['docker', 'kvm']) {
@@ -290,7 +300,7 @@ for (const kind of ['docker', 'kvm']) {
     test(`${kind} restart-loop Running=${running} is removed, recreated and started`, async () => {
       const f = fixture({ kind, running, restarting: true })
       assert.equal((await f.boot()).action, 'created')
-      assert.deepEqual(f.calls, ['remove', 'files', 'create', 'start', 'runtime'])
+      assert.deepEqual(f.calls, ['remove', 'files', 'seal-credentials', 'create', 'start', 'runtime'])
       assert.equal(f.state().Restarting, false)
       assert.equal(f.state().Running, true)
     })
@@ -298,12 +308,12 @@ for (const kind of ['docker', 'kvm']) {
 }
 
 for (const [options, action, calls] of [
-  [{}, 'already-running', ['runtime']],
-  [{ cpuWrapped: true }, 'already-running', ['runtime']],
-  [{ running: false }, 'started', ['files', 'start', 'runtime']],
-  [{ missing: true }, 'created', ['files', 'create', 'start', 'runtime']],
-  [{ mismatch: true }, 'created', ['remove', 'files', 'create', 'start', 'runtime']],
-  [{ cragReady: true }, 'created', ['remove', 'files', 'create', 'start', 'runtime']],
+  [{}, 'already-running', ['seal-credentials', 'runtime']],
+  [{ cpuWrapped: true }, 'already-running', ['seal-credentials', 'runtime']],
+  [{ running: false }, 'started', ['files', 'seal-credentials', 'start', 'runtime']],
+  [{ missing: true }, 'created', ['files', 'seal-credentials', 'create', 'start', 'runtime']],
+  [{ mismatch: true }, 'created', ['remove', 'files', 'seal-credentials', 'create', 'start', 'runtime']],
+  [{ cragReady: true }, 'created', ['remove', 'files', 'seal-credentials', 'create', 'start', 'runtime']],
 ]) {
   test(`remote lifecycle preserves ${action} behavior: ${JSON.stringify(options)}`, async () => {
     const f = fixture(options)
