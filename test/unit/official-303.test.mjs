@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { prepareCliHopBody } from '../../src/lib/protocol/outbound-attempt.mjs'
+import { prepareCliHopBody, prepareOutboundHeaders } from '../../src/lib/protocol/outbound-attempt.mjs'
 import { finalizeWorkerPayload } from '../../src/lib/transport/go-worker-client.mjs'
 import { renderOfficial303Body } from '../../src/lib/identity/official-303.mjs'
 import {
@@ -32,6 +32,9 @@ import {
   outboundShape,
 } from '../../src/lib/protocol/outbound-shape.mjs'
 import { writeKernelConfig } from '../../src/lib/transport/rust-kernel-supervisor.mjs'
+import { OFFICIAL_CLI_VERSION, loadVmIdentity } from '../../src/lib/identity/vm-identity.mjs'
+import { CRAG_CLAUDE_VERSION } from '../../src/lib/vm/slot-engine.mjs'
+import { writeWorkerFiles } from '../../src/lib/vm/vm-runtime.mjs'
 
 const SKELETON = JSON.parse(
   fs.readFileSync(
@@ -542,7 +545,7 @@ test('official_full Environment adds only the editable extra for the current mod
   }
 })
 
-test('kernel.json cli_version follows the slot profile', () => {
+test('slot kernel, worker and outbound UA use the shipped CLI version independently of persona', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-303-cfg-'))
   const read = (vm, routing) =>
     JSON.parse(fs.readFileSync(writeKernelConfig(root, vm, { token: 't', routing }).configPath, 'utf8'))
@@ -557,6 +560,21 @@ test('kernel.json cli_version follows the slot profile', () => {
     const slot = read({ id: 'vm-05', persona_preset: 'official_303' }, {})
     assert.equal(slot.persona_preset, 'official_303')
     assert.equal(slot.system_layout, 'identity')
+    for (const dataplane of ['wrap', 'cc', 'crag']) {
+      const vm = { id: 'vm-06', dataplane, persona_preset: 'official_303' }
+      const routing = { compatibility: { cc_entrypoint: 'sdk-cli' } }
+      const kernel = read(vm, routing)
+      const workerPath = writeWorkerFiles(vm, root, { routing, transparent: true }).config
+      const worker = JSON.parse(fs.readFileSync(workerPath, 'utf8'))
+      const identity = loadVmIdentity({ vm, homeDir: path.join(root, 'test-home') })
+      const headers = prepareOutboundHeaders({}, '', identity, 'claude-opus-5-5', { routing })
+      const version = dataplane === 'crag' ? CRAG_CLAUDE_VERSION : OFFICIAL_CLI_VERSION
+      assert.equal(kernel.dataplane, dataplane)
+      assert.equal(kernel.cli_version, version)
+      assert.equal(worker.cli_version, version)
+      assert.equal(headers['user-agent'], `claude-cli/${version} (external, sdk-cli)`)
+      assert.equal(worker.oauth_user_agent, headers['user-agent'])
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

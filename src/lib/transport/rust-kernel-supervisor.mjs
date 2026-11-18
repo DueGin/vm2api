@@ -14,7 +14,7 @@ import {
   rustKernelBusy,
 } from './rust-kernel-client.mjs'
 import { maxRequestBytes, readRoutingConfigFile, streamIdleTimeoutMs } from '../core/config.mjs'
-import { profileForPreset } from '../identity/official-profiles.mjs'
+import { OFFICIAL_CLI_VERSION } from '../identity/vm-identity.mjs'
 import { resolveWorkstationProfile } from '../identity/workstation-profile.mjs'
 import { cacheTtlFromRouting, normalizeCacheTtl } from '../protocol/cache-ttl.mjs'
 import { thinkingDisplayMode } from '../protocol/thinking.mjs'
@@ -1279,7 +1279,7 @@ export function writeKernelConfig(
     if (host.native) return null
     throw err
   }
-  const claudeBin = resolveSlotClaude(target, kernelRouting, host).bin
+  const claude = resolveSlotClaude(target, kernelRouting, host)
   const tz = String(timezone || vm.timezone || previous.timezone || '').trim()
   const defaultCacheTtl = routing != null ? cacheTtlFromRouting(routing) : normalizeCacheTtl(previous.default_cache_ttl)
   const thinkingDisplay =
@@ -1332,12 +1332,12 @@ export function writeKernelConfig(
     provider: 'local_cli',
     dataplane,
     ...(dataplane === 'crag' ? { license_dir: '/run/kin/crag-license' } : {}),
-    claude_bin: claudeBin,
+    claude_bin: claude.bin,
     slots_per_worker: wrapSlotCount(vm, routing || {}),
     persona_preset: resolveSlotPersonaPreset(vm, routing || {}),
     system_layout: resolveCliSystemLayout(vm, routing || {}),
-    // cli-node hot-reads this per job: UA, billing cc_version and CCH input follow the slot's profile.
-    cli_version: profileForPreset(resolveSlotPersonaPreset(vm, routing || {})).cliVersion,
+    // CLI version used on the wire belongs to the shipped binary, not the persona template.
+    cli_version: claude.version || OFFICIAL_CLI_VERSION,
     default_cache_ttl: defaultCacheTtl,
     thinking_display: thinkingDisplay,
     cc_entrypoint:
@@ -1354,7 +1354,6 @@ export function writeKernelConfig(
     config.runtime_variant = 'crag-v2'
     config.asset_dir = '/run/kin/crag-native-assets'
     config.work_dir = '/run/kin/work'
-    config.cli_version = ''
     if (!host.bakedKernel) {
       const owner = runtimeFileOwner(vm)
       for (const name of ['crag-native-assets', 'work']) {

@@ -491,14 +491,25 @@ test('official passthrough drops betas newer than the pinned slot CLI', () => {
 })
 
 test('official 2.1.321 passthrough preserves supported additions and drops unknown beta tokens', () => {
+  const supported = [
+    'inline-tools-2026-09-15',
+    'advisor-tool-2026-03-01',
+    'agent-memory-2026-07-22',
+    'files-api-2025-04-14',
+  ]
+  const excluded = [
+    'cli-internal-2026-02-09',
+    'bedrock-2023-05-31',
+    'vertex-2023-10-16',
+    'extra-fixture-beta-2027-01-01',
+  ]
   const inbound = {
     'user-agent': 'claude-cli/2.1.322 (external, cli)',
-    'anthropic-beta': 'inline-tools-2026-09-15,advisor-tool-2026-03-01,extra-fixture-beta-2027-01-01',
+    'anthropic-beta': [...supported, ...excluded].join(','),
   }
   for (const identity of [null, { userAgent: 'claude-cli/2.1.321 (external, cli)' }]) {
     const tokens = resolveCrsHeaders(inbound, '', identity, 'claude-opus-5-5')['anthropic-beta'].split(',')
-    assert.ok(tokens.includes('inline-tools-2026-09-15'))
-    assert.ok(tokens.includes('advisor-tool-2026-03-01'))
-    assert.ok(!tokens.includes('extra-fixture-beta-2027-01-01'))
+    for (const token of supported) assert.ok(tokens.includes(token), token)
+    for (const token of excluded) assert.ok(!tokens.includes(token), token)
   }
 })

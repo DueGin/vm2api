@@ -109,7 +109,6 @@ import {
   trackCallerSystemBlock,
 } from './crag-print-prompt.mjs'
 import { repairAnthropicRequest } from '../pool/upstream-error-policy.mjs'
-import { profileForPreset } from '../identity/official-profiles.mjs'
 import { loadVmIdentity, OFFICIAL_CLI_VERSION } from '../identity/vm-identity.mjs'
 import {
   applyCrsIdentityReplace,
@@ -1945,7 +1944,7 @@ export function createHandleProtocol(deps) {
               }
             }
             // The front rewrite already produces the official two-block shape.
-            const outboundProfile = profileForPreset(resolvedPersona)
+            const slotCliVersion = identity?.cliVersion || OFFICIAL_CLI_VERSION
             // Render once from caller input with the selected slot's identity, not the pre-selection environment.
             if (!requestContext && !officialPassthrough) {
               hopBody = applyCrsUnofficialPersona(prepareCliPersonaInput(shallowCopyBody(personaIn), resolvedPersona), {
@@ -1955,7 +1954,7 @@ export function createHandleProtocol(deps) {
                 mode: resolvedPersona,
                 sessionId: attemptSessionId,
                 model: hopBody?.model,
-                cliVersion: outboundProfile.cliVersion,
+                cliVersion: slotCliVersion,
                 identity,
                 entrypoint: entrypointNow,
               })
@@ -1979,7 +1978,7 @@ export function createHandleProtocol(deps) {
               hopBody = ensureBillingAttribution(hopBody, {
                 firstUserText,
                 sessionId: attemptSessionId,
-                cliVersion: outboundProfile.cliVersion,
+                cliVersion: slotCliVersion,
                 indexes: billingIndexesFromMessages(hopBody.messages),
                 entrypoint: entrypointNow,
                 passthrough: officialPassthrough,
@@ -2015,7 +2014,7 @@ export function createHandleProtocol(deps) {
             personaHideTokens = 0
             logBag.inference_engine = resolveInferenceEngine(selected.vm, routingNow)
             logBag.persona_preset = resolveSlotPersonaPreset(selected.vm, routingNow)
-            logBag.outbound_profile = { cli_version: outboundProfile.cliVersion }
+            logBag.outbound_profile = { cli_version: slotCliVersion }
             logBag.official_cc_inference = 'cli-hop'
             logBag.provider = 'local_cli'
             hopBody = noteCachePrefix(selected, attemptSessionId, hopBody)

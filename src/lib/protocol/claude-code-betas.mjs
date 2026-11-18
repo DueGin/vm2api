@@ -212,7 +212,31 @@ const SLOT_CLI_BETAS_303 = [
 
 const SLOT_CLI_BETAS = new Map([
   ['2.1.303', new Set(SLOT_CLI_BETAS_303)],
-  ['2.1.321', new Set([...SLOT_CLI_BETAS_303, BETA_INLINE_TOOLS, 'advisor-tool-2026-03-01'])],
+  [
+    '2.1.321',
+    new Set([
+      ...SLOT_CLI_BETAS_303,
+      BETA_INLINE_TOOLS,
+      'advisor-tool-2026-03-01',
+      'redact-thinking-2026-02-12',
+      'token-efficient-tools-2026-03-28',
+      'auto-mode-classifier-2026-07-16',
+      'tool-search-tool-2025-10-19',
+      'agent-memory-2026-07-22',
+      'managed-agents-2026-04-01',
+      'user-profiles-2026-08-18',
+      'dreaming-2026-04-21',
+      'mcp-tunnels-2026-06-22',
+      'web-search-2025-03-05',
+      'files-api-2025-04-14',
+      'message-batches-2024-09-24',
+      'token-counting-2024-11-01',
+      'mcp-servers-2025-12-04',
+      'oidc-federation-2026-04-01',
+      'environments-2025-11-01',
+      'ccr-byoc-2025-07-29',
+    ]),
+  ],
 ])
 
 /** Drop the tokens the slot's pinned CLI cannot send. Empty pieces are ignored. */

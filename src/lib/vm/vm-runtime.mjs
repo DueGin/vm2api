@@ -32,15 +32,14 @@ import {
   resolveKernelDataplane,
   resolveCragKernelVersion,
   resolveOfficialCcInference,
-  resolveSlotPersonaPreset,
+  resolveSlotClaude,
 } from './slot-engine.mjs'
-import { profileForPreset } from '../identity/official-profiles.mjs'
 import { ensureSlotClaudeOwnership, chownSlotRuntimeFile, replaceSlotOwnedFile } from '../oauth/oauth-credentials.mjs'
 import { cragV2KernelWrapperScript, installedCragV2Root, materializeResolvedKernel } from './wrap-cli-runtime.mjs'
 import { ensureGuestMachineIdFile } from '../identity/workstation-fingerprint.mjs'
 import { ensureSlotComputer, rememberComputer } from '../identity/slot-computer.mjs'
 import { seedSlotUserId } from '../identity/slot-device-identity.mjs'
-import { officialClaudeCliUa, slotEntrypoint } from '../identity/vm-identity.mjs'
+import { OFFICIAL_CLI_VERSION, officialClaudeCliUa, slotEntrypoint } from '../identity/vm-identity.mjs'
 import { coerceRfc4122Uuid } from '../identity/rfc4122-uuid.mjs'
 import { boundProxyUrl, ensureProxyEgress, isLocalEgressProxy, slotNetworkForVm } from './egress.mjs'
 import { socksProxyEndpoint } from './socks-address.mjs'
@@ -885,9 +884,8 @@ export function writeWorkerFiles(vm, projectRoot, { transparent, routing } = {})
     max_event_bytes: 64 * 1024 * 1024,
     test_endpoints: testEndpoints,
     runtime_kind: runtimeKind(vm),
-    cli_version: profileForPreset(resolveSlotPersonaPreset(vm, resolvedRouting)).cliVersion,
+    cli_version: resolveSlotClaude(vm, resolvedRouting).version || OFFICIAL_CLI_VERSION,
   }
-  // usage / profile / reset calls carry the same UA entrypoint as the slot CLI's inference.
   workerConfig.oauth_user_agent = officialClaudeCliUa(workerConfig.cli_version, slotEntrypoint(resolvedRouting))
   if (onEgress || local) workerConfig.egress_mode = 'transparent'
   if (testEndpoints) {

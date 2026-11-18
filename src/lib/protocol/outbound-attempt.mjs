@@ -651,6 +651,8 @@ export function prepareOutboundEnvelope({
     requestContext?.purpose === 'auto_mode_classifier'
       ? prepared.body
       : applyThinkingDisplay(prepared.body, thinkingDisplayMode(routing))
+  // The shipped 2.1.321 slot supports inline-tools; keep this body-derived gate
+  // after caller-beta filtering so native tool definitions retain their required token.
   headers['anthropic-beta'] = withRequestProtocolBetas(
     String(headers['anthropic-beta'] || '').split(','),
     displayed,
