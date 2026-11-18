@@ -367,7 +367,7 @@ export async function keepOfficialCcResidentAfterHello({
   idleMemory,
   vm,
 }) {
-  restoreSlotMemoryAfterOfficialCc(vmId, idleMemory, { keepCli: true, vm })
+  const restored = restoreSlotMemoryAfterOfficialCc(vmId, idleMemory, { keepCli: true, vm })
   persistSlotRuntimeMemory(projectRoot, vmId, idleMemory)
   const started = startOfficialCcResidentProcess({
     vmId,
@@ -382,6 +382,7 @@ export async function keepOfficialCcResidentAfterHello({
   const live = inspectOfficialCcResident(vmId, vm)
   return {
     ok: live.running === true,
+    memory_restored: restored.ok !== false,
     host_pid: started.host_pid,
     guest_pid: live.pid,
     error: live.running ? null : 'resident claude failed to stay running',
@@ -1097,6 +1098,7 @@ export async function runOfficialCcBootstrap(rawOpts = {}) {
   stopOfficialCcResident(vmId, projectRoot)
   applyContainerMemory(vmId, memory, vm)
   let helloOk = false
+  let memoryRestored = false
   try {
     writeOfficialCcStatus(homeDir, {
       status: 'running',
@@ -1413,6 +1415,7 @@ export async function runOfficialCcBootstrap(rawOpts = {}) {
         idleMemory,
         vm,
       })
+      memoryRestored = residentInfo.memory_restored
       writeOfficialCcStatus(homeDir, {
         ...status,
         step: ok ? 'done' : status.step,
@@ -1420,7 +1423,7 @@ export async function runOfficialCcBootstrap(rawOpts = {}) {
         resident_ok: residentInfo.ok === true,
         resident_pid: residentInfo.guest_pid,
         bridge_port: residentInfo.bridge_port,
-        memory_restored: true,
+        memory_restored: memoryRestored,
         error: status.error,
       })
     }
@@ -1434,24 +1437,24 @@ export async function runOfficialCcBootstrap(rawOpts = {}) {
   } finally {
     if (!(keepResident && helloOk)) {
       const restored = restoreSlotMemoryAfterOfficialCc(vmId, idleMemory, { vm })
-      // The probe reads the cgroup limit for memory_bytes. Collected above, it would
-      // record this bootstrap's temporary `memory` cap instead of the slot's real idle
-      // quota, so a 1g slot would report 500 MiB forever. Collect after the restore.
-      if (restored.ok !== false && typeof collectIdentity === 'function') {
-        try {
-          await collectIdentity(projectRoot, JSON.parse(fs.readFileSync(vmPath, 'utf8')))
-        } catch {}
-      }
+      memoryRestored = restored.ok !== false
       try {
         const prev = readOfficialCcStatus(homeDir) || {}
         writeOfficialCcStatus(homeDir, {
           ...prev,
           memory_init: memory,
           memory_idle: idleMemory,
-          memory_restored: restored.ok !== false,
+          memory_restored: memoryRestored,
           resident: false,
           resident_ok: false,
         })
+      } catch {}
+    }
+    // The probe reads memory_bytes from the cgroup. Wait for either lifecycle to
+    // restore the idle quota, so the temporary bootstrap limit isn't persisted.
+    if (memoryRestored && typeof collectIdentity === 'function') {
+      try {
+        await collectIdentity(projectRoot, JSON.parse(fs.readFileSync(vmPath, 'utf8')))
       } catch {}
     }
   }

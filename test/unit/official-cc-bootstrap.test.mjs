@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import vmContext from 'node:vm'
 import {
   dockerGatewayIp,
   officialCcUidGid,
@@ -471,6 +472,63 @@ function writeSlotCliNode(home) {
   fs.mkdirSync(path.dirname(bin), { recursive: true })
   fs.writeFileSync(bin, '#!/bin/sh\nexit 0\n')
 }
+
+test('bootstrap collects guest identity after restoring idle memory in either CLI lifecycle', async () => {
+  const source = fs.readFileSync(new URL('../../src/lib/oauth/official-cc-bootstrap.mjs', import.meta.url), 'utf8')
+  const tail = source.slice(
+    source.indexOf('    if (keepResident && hello.ok) {'),
+    source.indexOf('\nexport function scheduleOfficialCcBootstrap'),
+  )
+  for (const [keepResident, restored] of [
+    [true, true],
+    [true, false],
+    [false, true],
+    [false, false],
+  ]) {
+    const calls = []
+    const done = vmContext.runInNewContext(
+      `async () => { let residentInfo = null; let memoryRestored = false; try { ${tail}`,
+      {
+        keepResident,
+        hello: { ok: true },
+        helloOk: true,
+        homeDir: '/fixture/home',
+        projectRoot: '/fixture',
+        vmPath: '/fixture/vms/vm-01.json',
+        vmId: 'vm-01',
+        vm: { id: 'vm-01' },
+        uid: 10001,
+        gid: 987,
+        timezone: 'Asia/Tokyo',
+        locale: 'en_US.UTF-8',
+        idleMemory: '1g',
+        memory: '500m',
+        ok: true,
+        status: { step: 'done' },
+        stats: {},
+        fs: { readFileSync: () => '{"id":"vm-01"}' },
+        writeOfficialCcStatus: () => {},
+        readOfficialCcStatus: () => null,
+        keepOfficialCcResidentAfterHello: async () => {
+          calls.push('resident-restore')
+          return { ok: true, memory_restored: restored }
+        },
+        restoreSlotMemoryAfterOfficialCc: () => {
+          calls.push('normal-restore')
+          return { ok: restored }
+        },
+        collectIdentity: async (root, record) => {
+          assert.equal(root, '/fixture')
+          assert.equal(record.id, 'vm-01')
+          calls.push('collect')
+          throw new Error('guest temporarily unreachable')
+        },
+      },
+    )
+    assert.equal((await done()).ok, true)
+    assert.deepEqual(calls, [keepResident ? 'resident-restore' : 'normal-restore', ...(restored ? ['collect'] : [])])
+  }
+})
 
 test('resident restore skips incomplete, disabled, and already-running slots', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-cc-restore-'))
