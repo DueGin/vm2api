@@ -87,7 +87,7 @@ export function outboundDeviceId(raw, fallback = 'kin-vm') {
   return sha256Hex(s || fallback)
 }
 
-export function loadVmIdentity(exec = {}) {
+export function loadVmIdentity(exec = {}, { cliVersion = OFFICIAL_CLI_VERSION } = {}) {
   const home = exec.homeDir || ''
   const claudeDir = path.join(home, '.claude')
   const settings = readJsonSafe(path.join(claudeDir, 'settings.json'), {}) || {}
@@ -121,8 +121,7 @@ export function loadVmIdentity(exec = {}) {
   // Credential email only — never leftover ~/.claude.json or inbound caller.
   const email = slotCred?.email || oauth.email || null
   // Slot leftover (2.1.233 / 2.1.234) must not leak into outbound UA or billing.
-  const cliVersion = OFFICIAL_CLI_VERSION
-  const userAgent = OFFICIAL_CLAUDE_CLI_UA
+  const userAgent = officialClaudeCliUa(cliVersion)
 
   // Do not merge leftover settings.env — old scripts (kill-switch /
   // ANTHROPIC_BASE_URL) would win over the current seed contract.

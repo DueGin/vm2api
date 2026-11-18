@@ -15,6 +15,7 @@
  */
 import { extractInboundEnvironmentSection, parseInboundEnvFacts } from './official-cc-system-2.1.241.mjs'
 import { officialSystemEnvFromIdentity, personaTemplateVars } from './crs-persona.mjs'
+import { OFFICIAL_CLI_VERSION } from './vm-identity.mjs'
 import {
   OFFICIAL_303_PRESET,
   agentStandingVar,
@@ -222,6 +223,7 @@ export function renderOfficial303Body(
     callerSystem,
     officialCaller = false,
     identity = null,
+    cliVersion = identity?.cliVersion || OFFICIAL_CLI_VERSION,
     compat = {},
     cacheTtl,
     firstUserText = '',
@@ -243,7 +245,7 @@ export function renderOfficial303Body(
 
   const vars = personaTemplateVars({
     firstUserText,
-    cliVersion: PROFILE.cliVersion,
+    cliVersion,
     sessionId,
     env,
     agentStanding: agentStandingVar(compat, OFFICIAL_303_PRESET),

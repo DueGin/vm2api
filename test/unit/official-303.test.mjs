@@ -579,3 +579,21 @@ test('slot kernel, worker and outbound UA use the shipped CLI version independen
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('lean billing uses the selected slot version rather than the prompt fixture', () => {
+  const cliVersion = '2.1.999'
+  const identity = loadVmIdentity({}, { cliVersion })
+  const body = renderOfficial303Body(
+    { model: 'claude-opus-5-5', messages: [{ role: 'user', content: 'hello' }] },
+    {
+      identity,
+      cliVersion,
+    },
+  )
+  assert.match(body.system[0].text, /cc_version=2\.1\.999\./)
+  assert.equal(identity.userAgent, `claude-cli/${cliVersion} (external, cli)`)
+})
+
+test('wrap CLI version is covered by the Worker ClientHello capture', () => {
+  assert.equal(OFFICIAL_CLI_VERSION, '2.1.321', '重新抓 ClientHello：Bun 1.4.4 起握手结构有变化')
+})

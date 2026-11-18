@@ -11,6 +11,7 @@ import {
   resolveUsageWindows,
 } from '../../src/lib/protocol/user-count-tokens.mjs'
 import { createUsageCache } from '../../src/lib/oauth/usage-cache.mjs'
+import { CRAG_CLAUDE_VERSION } from '../../src/lib/vm/slot-engine.mjs'
 
 function jsonCapture() {
   const calls = []
@@ -100,18 +101,20 @@ test('setup-token count_tokens hops and returns input_tokens', async () => {
       requireAuth: () => true,
       readBody: async () => ({ model: 'claude-sonnet-5', messages: [{ role: 'user', content: 'hi' }] }),
       cfg: { limits: { max_body_bytes: 1024 } },
+      getRoutingConfig: () => ({ compatibility: { cc_entrypoint: 'sdk-cli' } }),
       stickyRouter: { extractPoolKey: () => null },
       getPoolScheduler: () => ({
         peekAccount: async () => ({
           ok: true,
           vmId: 'vm-01',
           accountId: 'acc-1',
-          vm: { credential_mode: 'setup-token' },
+          vm: { credential_mode: 'setup-token', dataplane: 'crag' },
           exec: { vmId: 'vm-01' },
         }),
       }),
-      countTokensViaWorker: async (_exec, { body }) => {
+      countTokensViaWorker: async (_exec, { body, headers }) => {
         assert.equal(body.model, 'claude-sonnet-5')
+        assert.equal(headers['user-agent'], `claude-cli/${CRAG_CLAUDE_VERSION} (external, sdk-cli)`)
         return { ok: true, status: 200, body: { input_tokens: 11 } }
       },
     },

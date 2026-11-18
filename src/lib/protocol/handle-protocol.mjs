@@ -76,6 +76,7 @@ import { keyModelError } from '../admin/key-models.mjs'
 import {
   resolveInferenceEngine,
   resolveOfficialCcInference,
+  resolveSlotClaude,
   resolveSlotPersonaPreset,
   slotPersonaModeOverride,
 } from '../vm/slot-engine.mjs'
@@ -576,6 +577,7 @@ export function createHandleProtocol(deps) {
     repaired = false,
     requestContext = null,
     routing = {},
+    cliVersion = resolveSlotClaude(candidate.vm, routing).version,
     noGoFallback = false,
     onEnvelope = null,
     onOutboundHeaders = null,
@@ -591,7 +593,7 @@ export function createHandleProtocol(deps) {
       reqHeaders,
       timeoutMs,
       idleTimeoutMs,
-      identity: loadVmIdentity(candidate.exec),
+      identity: loadVmIdentity(candidate.exec, { cliVersion }),
       signal,
       deliveryMode,
       want1m,
@@ -1795,8 +1797,6 @@ export function createHandleProtocol(deps) {
               throw error
             }
           }
-          const identity = loadVmIdentity(selected.exec)
-          if (identity && attemptSessionId) identity.callerSessionId = attemptSessionId
           const credMode = credentialModeFromOauth(selected.vm?.claude || {})
           const modeOverride = slotPersonaModeOverride(selected.vm)
           let routingNow = getRouting()
@@ -1806,6 +1806,9 @@ export function createHandleProtocol(deps) {
           } catch {
             // A mid-write routing file keeps the in-memory snapshot for this request.
           }
+          const slotCliVersion = resolveSlotClaude(selected.vm, routingNow).version || OFFICIAL_CLI_VERSION
+          const identity = loadVmIdentity(selected.exec, { cliVersion: slotCliVersion })
+          if (identity && attemptSessionId) identity.callerSessionId = attemptSessionId
           const entrypointNow = ccEntrypointFromRouting(routingNow)
           const repaired = extra.repaired === true
           const preserveThinkingBlocks =
@@ -1938,13 +1941,13 @@ export function createHandleProtocol(deps) {
                   callerCwd: callerEnvironment?.cwd,
                   preparedHop,
                   transportRouting,
+                  cliVersion: slotCliVersion,
                   requestContext,
                   repaired,
                 },
               }
             }
             // The front rewrite already produces the official two-block shape.
-            const slotCliVersion = identity?.cliVersion || OFFICIAL_CLI_VERSION
             // Render once from caller input with the selected slot's identity, not the pre-selection environment.
             if (!requestContext && !officialPassthrough) {
               hopBody = applyCrsUnofficialPersona(prepareCliPersonaInput(shallowCopyBody(personaIn), resolvedPersona), {
@@ -2039,6 +2042,7 @@ export function createHandleProtocol(deps) {
                 cragPrint: false,
                 preparedHop,
                 transportRouting,
+                cliVersion: slotCliVersion,
                 requestContext,
                 repaired,
               },
@@ -2056,7 +2060,7 @@ export function createHandleProtocol(deps) {
               mode: configuredMode,
               sessionId: attemptSessionId,
               model: personaIn?.model,
-              cliVersion: OFFICIAL_CLI_VERSION,
+              cliVersion: slotCliVersion,
               identity,
             })
             hopBody = officialMessagesBody(rewritten)
@@ -2123,6 +2127,7 @@ export function createHandleProtocol(deps) {
             meta: {
               toolNames: composeToolNames(inboundToolReverse, prepared.toolNames),
               sessionId: attemptSessionId,
+              cliVersion: slotCliVersion,
               repaired,
             },
           }
@@ -2149,6 +2154,7 @@ export function createHandleProtocol(deps) {
               requestContext: attemptMeta?.requestContext || requestContext,
               want1m,
               routing: attemptMeta?.transportRouting ?? getRouting(),
+              cliVersion: attemptMeta?.cliVersion,
               noGoFallback: !!pinVmId,
               onEnvelope: noteOutboundEnvelope,
               onOutboundHeaders: noteOutboundHeaders,
@@ -2179,6 +2185,7 @@ export function createHandleProtocol(deps) {
             })
           keepalive.arm()
           try {
+            const routing = attemptMeta?.transportRouting ?? getRouting()
             return await dispatchStreamInference({
               exec: candidate.exec,
               admitCragInference: deps.admitCragInference,
@@ -2194,11 +2201,13 @@ export function createHandleProtocol(deps) {
               reqHeaders: req.headers,
               timeoutMs: cfg.limits.upstream_timeout_ms,
               idleTimeoutMs: streamIdleTimeoutMs,
-              identity: loadVmIdentity(candidate.exec),
+              identity: loadVmIdentity(candidate.exec, {
+                cliVersion: attemptMeta?.cliVersion ?? resolveSlotClaude(candidate.vm, routing).version,
+              }),
               signal,
               deliveryMode: attemptDelivery,
               want1m,
-              routing: attemptMeta?.transportRouting ?? getRouting(),
+              routing,
               slotWaitMs: candidate.slotWaitMs,
               slotWaitDeadlineMs: candidate.slotWaitDeadlineMs,
               tenantId,

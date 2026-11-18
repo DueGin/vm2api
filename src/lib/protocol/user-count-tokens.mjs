@@ -39,6 +39,7 @@ import { pickCodexSlots } from '../pool/codex-slot-pool.mjs'
 import { detectInboundPlatform } from './platform-detect.mjs'
 import { resolveInboundIdentity } from '../identity/identity-rewrite.mjs'
 import { officialCliApiHeaders, slotEntrypoint } from '../identity/vm-identity.mjs'
+import { resolveSlotClaude } from '../vm/slot-engine.mjs'
 export function usageUnsupportedError() {
   return makeError({
     type: ErrorType.INVALID_REQUEST,
@@ -317,7 +318,10 @@ export async function handleUserCountTokens(req, res, deps) {
     headers: {
       // The slot CLI's own client headers: a gateway-only UA here would be the one
       // request on this account that no Claude Code install ever sends.
-      ...officialCliApiHeaders({ entrypoint: slotEntrypoint(routing) }),
+      ...officialCliApiHeaders({
+        entrypoint: slotEntrypoint(routing),
+        version: resolveSlotClaude(peeked.vm, routing).version,
+      }),
       'anthropic-version': '2023-06-01',
       'anthropic-beta': isApiKeyMode(mode) ? apiKeyBetaHeader('') : setupTokenBetaHeader(parsed.body.model),
     },

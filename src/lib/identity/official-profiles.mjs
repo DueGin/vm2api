@@ -2,7 +2,8 @@
  * Official Claude Code outbound profiles: the reference every outbound shape is
  * compared against. Data plus small lookups only; no request mutation here.
  *
- * Named official presets use 2.1.303. Empty and legacy presets retain 2.1.296.
+ * Named official presets use the 2.1.303 prompt capture; cliVersion follows
+ * the fixture's meta.cli_version (currently 2.1.321). Legacy presets retain 2.1.296.
  */
 import { createRequire } from 'node:module'
 import { OFFICIAL_SLOT_CWD, officialProjectSlug, sanitizeInboundCwd } from './official-cc-system-2.1.241.mjs'
