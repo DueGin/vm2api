@@ -78,7 +78,7 @@ func NewOAuthHTTPClient(proxyURL string, proxyRequired bool, timeout time.Durati
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
-	client := slotCLIClient(timeout, dialContext).EnableAutoDecompress()
+	client := kinoauth.EnableResponseDecoding(slotCLIClient(timeout, dialContext))
 	client.GetClient().CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return errors.New("OAuth redirects are disabled")
 	}
@@ -113,7 +113,7 @@ func NewTransparentOAuthHTTPClient(timeout time.Duration) (*http.Client, error) 
 		timeout = 60 * time.Second
 	}
 	dial := (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext
-	client := slotCLIClient(timeout, dial).EnableAutoDecompress()
+	client := kinoauth.EnableResponseDecoding(slotCLIClient(timeout, dial))
 	client.GetClient().CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return errors.New("OAuth redirects are disabled")
 	}

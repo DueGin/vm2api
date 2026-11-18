@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -219,19 +220,34 @@ func rawTokenServer(t *testing.T, body string, zipped bool) (string, <-chan stri
 }
 
 func TestRefreshRequestMatchesCLIAxiosWire(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		scopes []string
+		want   string
+	}{
+		{"no scopes", nil, "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"},
+		{"non subscriber scopes", []string{"org:create_api_key", "user:profile"}, "org:create_api_key user:profile"},
+	} {
+		t.Run(tc.name, func(t *testing.T) { assertRefreshRequestWire(t, tc.scopes, tc.want) })
+	}
+}
+
+func assertRefreshRequestWire(t *testing.T, scopes []string, wantScope string) {
+	t.Helper()
 	addr, captured := rawTokenServer(t, `{"access_token":"access-2","refresh_token":"refresh-2","expires_in":28800}`, true)
 	store := credential.NewStore(filepath.Join(t.TempDir(), "credentials.json"))
 	if _, err := store.Save(credential.Credential{
 		AccessToken:  "access-1",
 		RefreshToken: "refresh-1",
 		ExpiresAt:    time.Now().Add(-time.Minute).UnixMilli(),
+		Scopes:       scopes,
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	refresher := &Refresher{
 		Store: store,
 		// Production's slot client: req/v3 transport (header order) with auto-decompress.
-		Client:   req.C().EnableAutoDecompress().GetClient(),
+		Client:   EnableResponseDecoding(req.C()).GetClient(),
 		TokenURL: "http://" + addr + "/v1/oauth/token",
 		MaxTries: 1,
 	}
@@ -245,7 +261,7 @@ func TestRefreshRequestMatchesCLIAxiosWire(t *testing.T) {
 	raw := <-captured
 	head, body, _ := strings.Cut(raw, "\r\n\r\n")
 	wantBody := `{"grant_type":"refresh_token","refresh_token":"refresh-1","client_id":"` + DefaultClientID +
-		`","scope":"user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"}`
+		`","scope":"` + wantScope + `"}`
 	if body != wantBody {
 		t.Fatalf("body\n got %s\nwant %s", body, wantBody)
 	}
@@ -272,5 +288,38 @@ func TestRefreshScopeFollowsTheCLI(t *testing.T) {
 	}
 	if got := refreshScope(credential.Credential{Scopes: []string{"org:create_api_key", "user:profile"}}); got != "org:create_api_key user:profile" {
 		t.Fatalf("console scope = %q", got)
+	}
+}
+
+type trackedResponseBody struct {
+	io.Reader
+	closed bool
+}
+
+func (body *trackedResponseBody) Close() error {
+	body.closed = true
+	return nil
+}
+
+func TestUnsupportedRefreshEncodingClosesOriginalBody(t *testing.T) {
+	raw := &trackedResponseBody{Reader: strings.NewReader("opaque data")}
+	refresher := &Refresher{
+		Client: &http.Client{Transport: req.HttpRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			response := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Encoding": {"compress"}},
+				Body:       raw,
+			}
+			return response, decodeResponseBody(response)
+		})},
+		TokenURL: "http://127.0.0.1/v1/oauth/token",
+	}
+	_, err := refresher.request(context.Background(), credential.Credential{RefreshToken: "refresh-old"})
+	var refreshErr *RefreshError
+	if !errors.As(err, &refreshErr) || refreshErr.Code != "unsupported_content_encoding" {
+		t.Fatalf("unexpected refresh error: %v", err)
+	}
+	if !raw.closed {
+		t.Fatal("refresh did not close the original response body")
 	}
 }

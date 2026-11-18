@@ -24,7 +24,7 @@ RUN cd api-kernel && go build -buildvcs=false -trimpath -o /out/kin-api-kernel .
 COPY worker/go.mod worker/go.sum ./worker/
 RUN cd worker && go mod download
 COPY worker/ ./worker/
-RUN cd worker && go build -buildvcs=false -trimpath -o /out/kin-worker ./cmd/kin-worker
+RUN cd worker && go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/kin-worker ./cmd/kin-worker
 
 FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS payload
 WORKDIR /src

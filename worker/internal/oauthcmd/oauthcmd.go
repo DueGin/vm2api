@@ -24,6 +24,7 @@ const (
 	requestTimeout       = 30 * time.Second
 	maxBodyBytes         = 4 << 20
 	claudeResetUsagePath = "/api/oauth/usage?cedar_ember=1&skip_spend=1"
+	defaultCLIVersion    = "2.1.321"
 )
 
 var (
@@ -128,7 +129,11 @@ func Run(args []string, stdin io.Reader, stdout io.Writer) int {
 		var input countTokensInput
 		if err = decodeCountTokens(stdin, &input); err == nil {
 			headers = mergeHeaders(headers, input.Headers)
-			headers["user-agent"] = userAgent(cfg)
+			entrypoint := "cli"
+			if agent := headers["user-agent"]; strings.HasPrefix(agent, "claude-cli/") && strings.HasSuffix(agent, " (external, sdk-cli)") {
+				entrypoint = "sdk-cli"
+			}
+			headers["user-agent"] = cliUserAgent(cfg, entrypoint)
 			response, err = client.CountTokens(ctx, input.Body, headers)
 		} else {
 			return writeAndReturn(stdout, errorEnvelope(0, "invalid_arguments", "invalid count-tokens input"), 2)
@@ -136,7 +141,6 @@ func Run(args []string, stdin io.Reader, stdout io.Writer) int {
 	case "reset-status":
 		// cedar_ember hides grants unless the caller is the external CLI surface.
 		// The slot telemetry UA is claude-code/<ver>, which upstream answers as ineligible_reason=surface.
-		headers["user-agent"] = claudeResetUserAgent(cfg)
 		headers["x-app"] = "cli"
 		response, err = client.Get(ctx, claudeResetUsagePath, headers)
 	case "reset-redeem":
@@ -156,7 +160,6 @@ func Run(args []string, stdin io.Reader, stdout io.Writer) int {
 		if marshalErr != nil {
 			return writeAndReturn(stdout, errorEnvelope(0, "invalid_arguments", "invalid reset redeem request"), 2)
 		}
-		headers["user-agent"] = claudeResetUserAgent(cfg)
 		headers["x-app"] = "cli"
 		response, err = client.Post(ctx, target, payload, headers)
 	}
@@ -202,40 +205,37 @@ func oauthHTTPClient(cfg config.Config) (*http.Client, error) {
 
 const oauthBeta = "oauth-2025-04-20"
 
+// requestHeaders is not used by usage/profile, which build their own axios headers.
+// oauth_user_agent applies only to models; resets force the external CLI entrypoint.
 func requestHeaders(cfg config.Config, op string) map[string]string {
-	headers := map[string]string{"user-agent": userAgent(cfg)}
 	switch op {
-	case "usage", "profile", "models", "reset-status", "reset-redeem":
-		headers["anthropic-beta"] = oauthBeta
+	case "models":
+		agent := strings.TrimSpace(cfg.OAuthUserAgent)
+		if agent == "" {
+			agent = cliUserAgent(cfg, "cli")
+		}
+		return map[string]string{"user-agent": agent, "anthropic-beta": oauthBeta}
+	case "reset-status", "reset-redeem":
+		return map[string]string{"user-agent": cliUserAgent(cfg, "cli"), "anthropic-beta": oauthBeta}
+	default:
+		return nil
 	}
-	return headers
 }
 
 // claudeCodeUserAgent is getClaudeCodeUserAgent(): `claude-code/<version>`, no entrypoint.
 func claudeCodeUserAgent(cfg config.Config) string {
-	version := strings.TrimSpace(cfg.CLIVersion)
-	if version == "" {
-		version = "2.1.303"
-	}
-	return "claude-code/" + version
+	return "claude-code/" + cliVersion(cfg)
 }
 
-func userAgent(cfg config.Config) string {
-	if value := strings.TrimSpace(cfg.OAuthUserAgent); value != "" {
-		return value
-	}
+func cliVersion(cfg config.Config) string {
 	if version := strings.TrimSpace(cfg.CLIVersion); version != "" {
-		return "claude-cli/" + version + " (external, cli)"
+		return version
 	}
-	return "claude-cli/2.1.293 (external, cli)"
+	return defaultCLIVersion
 }
 
-func claudeResetUserAgent(cfg config.Config) string {
-	version := strings.TrimSpace(cfg.CLIVersion)
-	if version == "" {
-		version = "2.1.293"
-	}
-	return "claude-cli/" + version + " (external, cli)"
+func cliUserAgent(cfg config.Config, entrypoint string) string {
+	return "claude-cli/" + cliVersion(cfg) + " (external, " + entrypoint + ")"
 }
 
 func mergeHeaders(base, extra map[string]string) map[string]string {
@@ -301,6 +301,9 @@ func writeUpstreamResponse(stdout io.Writer, response *upstream.Response) int {
 		return writeAndReturn(stdout, errorEnvelope(0, "upstream_transport_error", errorMessage("upstream_transport_error")), 0)
 	}
 	defer response.Body.Close()
+	if !kinoauth.IsIdentityEncoding(response.Header) {
+		return writeAndReturn(stdout, errorEnvelope(response.Status, "unsupported_content_encoding", errorMessage("unsupported_content_encoding")), 0)
+	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, maxBodyBytes))
 	if err != nil {
 		return writeAndReturn(stdout, errorEnvelope(response.Status, "upstream_transport_error", errorMessage("upstream_transport_error")), 0)
@@ -364,10 +367,14 @@ func classifyError(err error) string {
 	}
 	var refreshErr *kinoauth.RefreshError
 	if errors.As(err, &refreshErr) {
-		if refreshErr.Code == "api_key_missing" {
+		switch refreshErr.Code {
+		case "api_key_missing":
 			return "credential_required"
+		case "unsupported_content_encoding", "empty_body":
+			return refreshErr.Code
+		default:
+			return "refresh_failed"
 		}
-		return "refresh_failed"
 	}
 	lower := strings.ToLower(err.Error())
 	switch {
@@ -403,6 +410,10 @@ func errorMessage(code string) string {
 		return "slot SOCKS5 is required"
 	case "refresh_failed":
 		return "OAuth refresh failed"
+	case "unsupported_content_encoding":
+		return "upstream response uses unsupported content encoding"
+	case "empty_body":
+		return "OAuth refresh response is empty"
 	case "credential_required":
 		return "credential is required"
 	case "upstream_transport_error":

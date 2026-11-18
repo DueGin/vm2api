@@ -93,9 +93,87 @@ func TestRefreshOutputNeverContainsTokens(t *testing.T) {
 	}
 }
 
-func TestCountTokensReadsStdin(t *testing.T) {
+func TestRefreshReportsResponseBodyErrors(t *testing.T) {
+	for _, tc := range []struct {
+		encoding string
+		body     string
+		wantCode string
+	}{
+		{"compress", "opaque data", "unsupported_content_encoding"},
+		{"", "", "empty_body"},
+	} {
+		t.Run(tc.wantCode, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if got := request.Header.Get("Accept-Encoding"); got != "gzip, compress, deflate, br" {
+					t.Errorf("Accept-Encoding = %q", got)
+				}
+				if tc.encoding != "" {
+					writer.Header().Set("Content-Encoding", tc.encoding)
+				}
+				_, _ = writer.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			configPath, credPath := testConfig(t, server.URL, server.URL, nil)
+			saveCredential(t, credPath, credential.Credential{
+				AccessToken:  "old-access",
+				RefreshToken: "old-refresh",
+				ExpiresAt:    time.Now().Add(-time.Minute).UnixMilli(),
+			})
+			var output bytes.Buffer
+			if code := Run([]string{"refresh", "--config", configPath}, nil, &output); code != 0 {
+				t.Fatalf("exit code = %d, output = %s", code, output.String())
+			}
+			var envelope responseEnvelope
+			decodeOutput(t, &output, &envelope)
+			body, _ := envelope.Body.(map[string]any)
+			failure, _ := body["error"].(map[string]any)
+			if envelope.OK || envelope.Status != http.StatusOK || failure["code"] != tc.wantCode {
+				t.Fatalf("envelope = %+v, want %s", envelope, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestDefaultOAuthUserAgentsUsePinnedCLIVersion(t *testing.T) {
+	for _, tc := range []struct {
+		operation string
+		input     string
+		want      string
+	}{
+		{"usage", "", "claude-code/2.1.321"},
+		{"profile", "", "axios/1.15.0"},
+		{"models", "", "claude-cli/2.1.321 (external, cli)"},
+		{"reset-status", "", "claude-cli/2.1.321 (external, cli)"},
+		{"count-tokens", `{"body":{"messages":[]},"headers":{"User-Agent":"caller-ua"}}`, "claude-cli/2.1.321 (external, cli)"},
+	} {
+		t.Run(tc.operation, func(t *testing.T) {
+			seen := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				seen <- request.UserAgent()
+				_, _ = writer.Write([]byte(`{}`))
+			}))
+			defer server.Close()
+			configPath, credPath := testConfig(t, server.URL, server.URL, nil)
+			saveCredential(t, credPath, credential.Credential{AccessToken: "access-live", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+			var output bytes.Buffer
+			if code := Run([]string{tc.operation, "--config", configPath}, strings.NewReader(tc.input), &output); code != 0 {
+				t.Fatalf("exit code = %d, output = %s", code, output.String())
+			}
+			select {
+			case got := <-seen:
+				if got != tc.want {
+					t.Fatalf("User-Agent = %q, want %q", got, tc.want)
+				}
+			default:
+				t.Fatalf("no upstream request, output = %s", output.String())
+			}
+		})
+	}
+}
+
+func TestCountTokensReadsStdinAndRebuildsUserAgent(t *testing.T) {
 	var gotBody map[string]any
-	var gotBeta string
+	var gotBeta, gotUA string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v1/messages/count_tokens" || request.URL.RawQuery != "beta=true" {
 			t.Fatalf("path = %s?%s", request.URL.Path, request.URL.RawQuery)
@@ -104,16 +182,19 @@ func TestCountTokensReadsStdin(t *testing.T) {
 			t.Fatalf("decode body: %v", err)
 		}
 		gotBeta = request.Header.Get("Anthropic-Beta")
+		gotUA = request.UserAgent()
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = writer.Write([]byte(`{"input_tokens":12}`))
 	}))
 	defer server.Close()
 
-	configPath, _ := testConfig(t, server.URL, server.URL, nil)
-	credPath := filepath.Join(filepath.Dir(configPath), "credentials.json")
+	configPath, credPath := testConfig(t, server.URL, server.URL, map[string]string{
+		"User-Agent":  "claude-cli/2.1.293 (external, cli)",
+		"CLI-Version": "2.1.321",
+	})
 	saveCredential(t, credPath, credential.Credential{AccessToken: "access-live", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
 
-	input := `{"body":{"model":"claude-test","messages":[]},"headers":{"anthropic-beta":"beta-from-node"}}`
+	input := `{"body":{"model":"claude-test","messages":[]},"headers":{"anthropic-beta":"beta-from-node","user-agent":"claude-cli/2.1.303 (external, sdk-cli)"}}`
 	var output bytes.Buffer
 	if code := Run([]string{"count-tokens", "--config", configPath}, strings.NewReader(input), &output); code != 0 {
 		t.Fatalf("exit code = %d, output = %s", code, output.String())
@@ -122,6 +203,9 @@ func TestCountTokensReadsStdin(t *testing.T) {
 	decodeOutput(t, &output, &envelope)
 	if !envelope.OK || gotBody["model"] != "claude-test" || gotBeta != "beta-from-node" {
 		t.Fatalf("envelope=%+v body=%v beta=%q", envelope, gotBody, gotBeta)
+	}
+	if gotUA != "claude-cli/2.1.321 (external, sdk-cli)" {
+		t.Fatalf("User-Agent = %q", gotUA)
 	}
 }
 
@@ -157,7 +241,7 @@ func TestResetStatusRequestsCedarEmber(t *testing.T) {
 	if gotPath != "/api/oauth/usage?cedar_ember=1&skip_spend=1" || gotBeta != "oauth-2025-04-20" || gotApp != "cli" {
 		t.Fatalf("path=%q beta=%q app=%q", gotPath, gotBeta, gotApp)
 	}
-	if gotUA != "claude-cli/2.1.293 (external, cli)" {
+	if gotUA != "claude-cli/2.1.321 (external, cli)" {
 		t.Fatalf("user-agent=%q", gotUA)
 	}
 }
@@ -282,8 +366,11 @@ func testConfig(t *testing.T, anthropicURL, tokenURL string, headers map[string]
 		"oauth_token_url":    tokenURL,
 	}
 	for key, value := range headers {
-		if strings.EqualFold(strings.TrimSpace(key), "user-agent") {
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "user-agent":
 			raw["oauth_user_agent"] = value
+		case "cli-version":
+			raw["cli_version"] = value
 		}
 	}
 	data, err := json.Marshal(raw)

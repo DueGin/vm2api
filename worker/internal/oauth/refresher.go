@@ -315,6 +315,14 @@ func (r *Refresher) request(ctx context.Context, current credential.Credential) 
 		return credential.Credential{}, fmt.Errorf("OAuth refresh transport: %w", err)
 	}
 	defer response.Body.Close()
+	if !IsIdentityEncoding(response.Header) {
+		return credential.Credential{}, &RefreshError{
+			Status:    response.StatusCode,
+			Code:      "unsupported_content_encoding",
+			Message:   "refresh response uses unsupported content encoding",
+			Retryable: response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500,
+		}
+	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
 		return credential.Credential{}, fmt.Errorf("read OAuth refresh response: %w", err)
@@ -340,6 +348,9 @@ func (r *Refresher) request(ctx context.Context, current credential.Credential) 
 			Message:   message,
 			Retryable: retryable,
 		}
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return credential.Credential{}, &RefreshError{Status: response.StatusCode, Code: "empty_body", Message: "refresh response is empty"}
 	}
 	if strings.TrimSpace(decoded.AccessToken) == "" {
 		return credential.Credential{}, &RefreshError{Status: response.StatusCode, Code: "missing_access_token", Message: "refresh response has no access_token"}
