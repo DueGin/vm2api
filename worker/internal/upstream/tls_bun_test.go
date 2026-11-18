@@ -17,9 +17,9 @@ import (
 // keyShareX25519 prefixes the 32-byte x25519 public key in the key_share extension.
 var keyShareX25519 = []byte{0x00, 0x33, 0x00, 0x26, 0x00, 0x24, 0x00, 0x1d, 0x00, 0x20}
 
-func loadReferenceHello(t *testing.T) []byte {
+func loadReferenceHello(t *testing.T, name string) []byte {
 	t.Helper()
-	raw, err := os.ReadFile("testdata/cli-node-2.1.303-clienthello.hex")
+	raw, err := os.ReadFile("testdata/" + name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func captureHello(t *testing.T, url string, oauth bool) []byte {
 }
 
 func TestSlotClientHelloMatchesCLINode(t *testing.T) {
-	ref := loadReferenceHello(t)
+	ref := loadReferenceHello(t, "cli-node-2.1.303-clienthello.hex")
 	for _, oauth := range []bool{true, false} {
 		got := captureHello(t, "https://platform.claude.com/v1/oauth/token", oauth)
 		if len(got) != len(ref) {
@@ -107,6 +107,24 @@ func TestSlotClientHelloMatchesCLINode(t *testing.T) {
 		if got[43] != 32 {
 			t.Fatalf("legacy session id is %d bytes, cli-node sends 32", got[43])
 		}
+	}
+}
+
+// Official Bun 1.4.0 (embedded by slot cli-node 2.1.321), captured on macOS
+// 2026-11-18. The Bun 1.3.14 control matched the Linux capture byte-for-byte
+// after masking, validating the cross-platform comparison.
+func TestSlotClientHelloMatchesBun140(t *testing.T) {
+	for _, fixture := range []struct{ name, url string }{
+		{"platform", "https://platform.claude.com/v1/oauth/token"},
+		{"api", "https://api.anthropic.com/api/oauth/usage"},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			want := maskHello(t, loadReferenceHello(t, "bun-1.4.0-clienthello-"+fixture.name+".hex"))
+			got := maskHello(t, captureHello(t, fixture.url, true))
+			if !bytes.Equal(got, want) {
+				t.Fatalf("ClientHello differs from Bun 1.4.0\n got %x\nwant %x", got, want)
+			}
+		})
 	}
 }
 
