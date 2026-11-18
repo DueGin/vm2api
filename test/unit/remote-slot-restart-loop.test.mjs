@@ -8,6 +8,7 @@ import {
   slotContainerBody,
 } from '../../src/lib/cluster/remote-slot.mjs'
 import { hasClusterSubscriptionBinds } from '../../src/lib/cluster/crag-subscription-files.mjs'
+import { validTimezone } from '../../src/lib/core/timezone.mjs'
 import { createKernelWatchdog } from '../../src/lib/transport/kernel-watchdog.mjs'
 import { kernelFaults } from '../../src/lib/transport/rust-kernel-client.mjs'
 import { dockerEnvMap, ensureKvmMachineRecord, kvmEnvMapIncomplete } from '../../src/lib/vm/kvm-machine.mjs'
@@ -30,12 +31,18 @@ test('remote CRAG KVM preparation resolves guest and egress images instead of re
   const prepare = source.slice(source.indexOf('async function prepare('), source.indexOf('function runtimeLabelOf('))
   const images = []
   const session = { host: {}, docker: {} }
-  const target = { id: 'vm-kvm', node_id: 'node-a', dataplane: 'crag', runtime: { type: 'kvm' } }
+  const target = {
+    id: 'vm-kvm',
+    node_id: 'node-a',
+    dataplane: 'crag',
+    timezone: 'Asia/Tokyo',
+    runtime: { type: 'kvm' },
+  }
   const run = vmContext.runInNewContext(`${prepare}; prepare`, {
     isKvmRuntime: () => true,
     resolveKernelDataplane: () => 'crag',
     OS_CATALOG: { 'ubuntu-24.04': {} },
-    normalizeTimezone: (value) => value || 'UTC',
+    validTimezone,
     STANDARD_LOCALE: 'en_US.UTF-8',
     vmNodeId: (vm) => vm.node_id,
     nodeSession: async () => session,
