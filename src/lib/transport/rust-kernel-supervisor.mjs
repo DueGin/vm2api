@@ -20,6 +20,7 @@ import { cacheTtlFromRouting, normalizeCacheTtl } from '../protocol/cache-ttl.mj
 import { thinkingDisplayMode } from '../protocol/thinking.mjs'
 import { getModelPolicy } from '../protocol/model-policy.mjs'
 import { ccEntrypointFromRouting } from '../identity/crs-persona.mjs'
+import { normalizeDeviceId } from '../identity/slot-device-identity.mjs'
 import { setVmSchedulable, listVms, getVm } from '../vm/vm-registry.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { isKvmRuntime, runtimeKind } from '../vm/runtime-kind.mjs'
@@ -257,9 +258,21 @@ function admitKernelLaunch(exec, start, { bindSubscription = false } = {}) {
 // on this host). Without these flags the TUI sits on the onboarding page and
 // CRAG refuses every prompt with a 502. Merge them inside the container instead.
 export const NODE_CLAUDE_SETUP_PY = `
-import json, os
+import json, os, re, sys, tempfile
 home = "/home/kincli"
 want = ("/run/kin/work", home)
+device_id = sys.argv[1] if len(sys.argv) > 1 else ""
+if not re.fullmatch(r"[0-9a-f]{64}", device_id):
+    device_id = ""
+if device_id:
+    try:
+        with open(home + "/.claude.json") as legacy:
+            old = json.load(legacy)
+        old_id = old.get("userID") if isinstance(old, dict) else None
+        if isinstance(old_id, str) and re.fullmatch(r"[0-9a-fA-F]{64}", old_id):
+            device_id = old_id
+    except (OSError, ValueError):
+        pass
 for f, create in ((home + "/.claude/.claude.json", True), (home + "/.claude.json", False)):
     try:
         doc = json.load(open(f))
@@ -270,6 +283,9 @@ for f, create in ((home + "/.claude/.claude.json", True), (home + "/.claude.json
     if not isinstance(doc, dict):
         continue
     changed = False
+    if create and device_id and not doc.get("userID"):
+        doc["userID"] = device_id
+        changed = True
     if doc.get("hasCompletedOnboarding") is not True:
         doc["hasCompletedOnboarding"] = True
         changed = True
@@ -289,11 +305,16 @@ for f, create in ((home + "/.claude/.claude.json", True), (home + "/.claude.json
     if not changed:
         continue
     mode = os.stat(f).st_mode & 0o777 if os.path.exists(f) else 0o600
-    tmp = f + ".kin-setup.tmp"
-    with open(tmp, "w") as fh:
-        fh.write(json.dumps(doc) + "\\n")
-    os.chmod(tmp, mode)
-    os.replace(tmp, f)
+    with tempfile.NamedTemporaryFile(mode="w", dir=os.path.dirname(f), prefix=".kin-setup-", delete=False) as fh:
+        tmp = fh.name
+        try:
+            fh.write(json.dumps(doc) + "\\n")
+            fh.close()
+            os.chmod(tmp, mode)
+            os.replace(tmp, f)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
     print("patched", f)
 `
 const NODE_SETUP_RECHECK_MS = 10 * 60_000
@@ -306,8 +327,11 @@ async function acceptNodeClaudeSetup(exec, runDockerExec) {
   if (!vmId) return null
   const last = nodeSetupAcceptedAt.get(vmId) || 0
   if (Date.now() - last < NODE_SETUP_RECHECK_MS) return null
+  const deviceId = normalizeDeviceId(exec.vm?.fingerprint?.device_id)
   const result = await runDockerExec(
-    execArgv(exec, ['python3', '-c', NODE_CLAUDE_SETUP_PY], { user: host.execUser(exec.vm) }),
+    execArgv(exec, ['python3', '-c', NODE_CLAUDE_SETUP_PY, ...(deviceId ? [deviceId] : [])], {
+      user: host.execUser(exec.vm),
+    }),
     { timeoutMs: 8000 },
   )
   if (!result?.ok) return 'node_claude_setup_failed'
@@ -1062,6 +1086,9 @@ async function launchRustKernel(
       crag: !!licensed.license,
     })
   }
+  try {
+    if (normalizeDeviceId(exec.vm?.fingerprint?.device_id)) await acceptNodeClaudeSetup(exec, runDockerExec)
+  } catch {}
   const wedged = rustKernelProcessUp(existing) && !rustKernelReachable(existing) && !occupied
   const pid1Kernel = await containerKernelIsPid1(container, runDockerExec, exec?.vm)
   const waitMs = force || staleWrap || slotMismatch ? 0 : bootWaitMs(timeoutMs, { pid1Kernel, wedged })
