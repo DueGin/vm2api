@@ -10,6 +10,7 @@ import {
 import { normalizeOauth } from '../../src/lib/oauth/oauth-credentials.mjs'
 import { liveOauthToSetupToken } from '../../src/lib/oauth/credential-mode.mjs'
 import { createImportCommit } from '../../src/lib/oauth/import-commit.mjs'
+import { OFFICIAL_CLI_VERSION } from '../../src/lib/identity/vm-identity.mjs'
 
 test('bootstrap URL uses claude-code entrypoint without vscode fields', () => {
   assert.match(CLAUDE_CLI_BOOTSTRAP_URL, /\/api\/claude_cli\/bootstrap\?entrypoint=claude-code&model=claude-opus-5-5$/)
@@ -152,7 +153,7 @@ test('enrichOauthIdentity fetches bootstrap when helper only returned tokens', a
     ['Accept-Encoding', 'gzip, compress, deflate, br'],
     ['Authorization', 'Bearer sk-ant-oat01-NEED'],
     ['Content-Type', 'application/json'],
-    ['User-Agent', 'claude-code/2.1.303'],
+    ['User-Agent', `claude-code/${OFFICIAL_CLI_VERSION}`],
     ['anthropic-beta', 'oauth-2025-04-20'],
     ['Connection', 'keep-alive'],
   ])
