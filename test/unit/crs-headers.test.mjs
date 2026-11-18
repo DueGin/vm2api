@@ -489,3 +489,16 @@ test('official passthrough drops betas newer than the pinned slot CLI', () => {
   assert.match(beta, /context-management-2025-06-27/)
   fs.rmSync(dir, { recursive: true, force: true })
 })
+
+test('official 2.1.321 passthrough preserves supported additions and drops unknown beta tokens', () => {
+  const inbound = {
+    'user-agent': 'claude-cli/2.1.322 (external, cli)',
+    'anthropic-beta': 'inline-tools-2026-09-15,advisor-tool-2026-03-01,extra-fixture-beta-2027-01-01',
+  }
+  for (const identity of [null, { userAgent: 'claude-cli/2.1.321 (external, cli)' }]) {
+    const tokens = resolveCrsHeaders(inbound, '', identity, 'claude-opus-5-5')['anthropic-beta'].split(',')
+    assert.ok(tokens.includes('inline-tools-2026-09-15'))
+    assert.ok(tokens.includes('advisor-tool-2026-03-01'))
+    assert.ok(!tokens.includes('extra-fixture-beta-2027-01-01'))
+  }
+})
